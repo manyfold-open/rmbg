@@ -9,6 +9,8 @@ import AgentPicker from './components/AgentPicker';
 import type { ConnectedAgent } from '../shared/types';
 import { api } from './api';
 
+import { compressImageForAI } from './utils/image';
+
 export function App() {
   const [originalImage, setOriginalImage] = useState<string | null>(null);
   const [svgPath, setSvgPath] = useState<string | null>(null);
@@ -52,13 +54,16 @@ export function App() {
     setSubjectLabel(null);
 
     try {
+      // Compress payload for AI analysis to prevent HTTP 413
+      const compressedImage = await compressImageForAI(dataUrl, 1024, 0.85);
+
       const response = await fetch('/api/remove-bg', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          image: dataUrl,
+          image: compressedImage,
           ...(selectedAgentId ? { agentId: selectedAgentId } : {}),
         }),
       });

@@ -121,15 +121,13 @@ Return a JSON object with the following schema:
                 },
                 {
                   kind: 'text',
-                  text: `Analyze the main subject in this image and extract its precise boundary contour for background removal.
+                  text: `Analyze the main subject in the attached image and extract its precise boundary contour for background removal.
 Return JSON ONLY with exact format:
 {
   "label": "description of subject",
   "svgPath": "smooth SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000)",
   "boundingBox": [ymin, xmin, ymax, xmax]
-}
-
-Image Data URI: data:${mimeType};base64,${base64Data}`,
+}`,
                 },
               ],
             },
