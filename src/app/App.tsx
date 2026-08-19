@@ -1,9 +1,13 @@
-import { useState } from 'react';
-import { Wand2, Sparkles, AlertCircle, RefreshCw, Layers } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Wand2, Sparkles, AlertCircle, RefreshCw, Layers, Link as LinkIcon, X } from 'lucide-react';
 import { UploadZone } from './components/UploadZone';
 import { ComparisonSlider, type BgConfig } from './components/ComparisonSlider';
 import { BackgroundCustomizer } from './components/BackgroundCustomizer';
 import { ExportToolbar } from './components/ExportToolbar';
+import ConnectPanel from './components/ConnectPanel';
+import AgentPicker from './components/AgentPicker';
+import type { ConnectedAgent } from '../shared/types';
+import { api } from './api';
 
 export function App() {
   const [originalImage, setOriginalImage] = useState<string | null>(null);
@@ -12,12 +16,33 @@ export function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  // Manyfold Agents state
+  const [agents, setAgents] = useState<ConnectedAgent[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [showConnectModal, setShowConnectModal] = useState<boolean>(false);
+
   const [bgConfig, setBgConfig] = useState<BgConfig>({
     mode: 'transparent',
     color: '#FFFFFF',
     customImageUrl: null,
     blurAmount: 10,
   });
+
+  const fetchAgents = async () => {
+    try {
+      const res = await api<{ agents: ConnectedAgent[] }>('/api/agents');
+      setAgents(res.agents || []);
+      if (res.agents && res.agents.length > 0 && !selectedAgentId) {
+        setSelectedAgentId(res.agents[0].agentId);
+      }
+    } catch {
+      // Ignore initial agent fetch error if unauthenticated/unsupported
+    }
+  };
+
+  useEffect(() => {
+    void fetchAgents();
+  }, []);
 
   const handleImageSelected = async (dataUrl: string) => {
     setOriginalImage(dataUrl);
@@ -32,7 +57,10 @@ export function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ image: dataUrl }),
+        body: JSON.stringify({
+          image: dataUrl,
+          ...(selectedAgentId ? { agentId: selectedAgentId } : {}),
+        }),
       });
 
       if (!response.ok) {
@@ -42,7 +70,7 @@ export function App() {
 
       const data = await response.json();
       setSvgPath(data.svgPath);
-      setSubjectLabel(data.label || '偵測到的目標');
+      setSubjectLabel(data.label || '辨識成功');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('Background removal error:', message);
@@ -76,12 +104,70 @@ export function App() {
           </div>
           <div>
             <h1 className="brand-title">
-              Auto BG Remover <span className="badge-ai"><Sparkles size={12} /> Gemini AI</span>
+              Auto BG Remover <span className="badge-ai"><Sparkles size={12} /> Gemini & Manyfold AI</span>
             </h1>
             <p className="brand-subtitle">秒速自動去除背景，高清透明 PNG 下載與自訂背景編輯</p>
           </div>
         </div>
+
+        {/* Manyfold Connect Button & Agent Picker */}
+        <div className="header-actions">
+          {agents.length > 0 ? (
+            <div className="agent-selector-row">
+              <span className="small muted">Agent:</span>
+              <AgentPicker
+                agents={agents}
+                selectedId={selectedAgentId}
+                onSelect={(id) => setSelectedAgentId(id)}
+              />
+              <button
+                type="button"
+                className="button subtle"
+                onClick={() => setShowConnectModal(true)}
+              >
+                <LinkIcon size={14} /> 管理
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="button subtle"
+              onClick={() => setShowConnectModal(true)}
+            >
+              <LinkIcon size={16} />
+              Connect Manyfold Agent
+            </button>
+          )}
+        </div>
       </header>
+
+      {/* Connect Modal */}
+      {showConnectModal && (
+        <div className="modal-backdrop">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3>Connect Manyfold Agent</h3>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setShowConnectModal(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="small muted">
+              直接登入授權您的 Manyfold AI Agent，無需自行設定 GEMINI_API_KEY 即可使用去背服務。
+            </p>
+            <ConnectPanel
+              initialSession={null}
+              onConnected={async () => {
+                await fetchAgents();
+                setShowConnectModal(false);
+              }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Main Workspace Area */}
       <main className="app-main">
@@ -96,7 +182,7 @@ export function App() {
             <div className="spinner-wrapper">
               <RefreshCw size={40} className="spinning-icon" />
             </div>
-            <h3 className="loading-title">Gemini AI 正在分析主體輪廓與去背...</h3>
+            <h3 className="loading-title">AI 正在分析主體輪廓與去背...</h3>
             <p className="loading-sub">精確分割人像、寵物、商品與各類物件</p>
           </div>
         )}
@@ -153,7 +239,7 @@ export function App() {
       </main>
 
       <footer className="app-footer">
-        <p>© 2026 Image Background Remover Tool — Powered by Cloudflare Workers & Google Gemini AI</p>
+        <p>© 2026 Image Background Remover Tool — Powered by Cloudflare Workers & Manyfold AI</p>
       </footer>
     </div>
   );

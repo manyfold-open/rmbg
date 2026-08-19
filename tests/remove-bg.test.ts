@@ -19,13 +19,13 @@ const mockDb = {
 } as unknown as D1Database;
 
 describe('remove-bg handler', () => {
-  it('throws HttpError 500 when GEMINI_API_KEY is missing', async () => {
+  it('throws HttpError 400 when no auth method or GEMINI_API_KEY is available', async () => {
     const origKey = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
     try {
-      const mockEnv = {} as Env;
+      const mockEnv = { DB: mockDb } as Env;
       await expect(handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' })).rejects.toThrow(
-        'GEMINI_API_KEY is not configured'
+        '無可用的 AI 處理服務'
       );
     } finally {
       process.env.GEMINI_API_KEY = origKey;
@@ -33,7 +33,7 @@ describe('remove-bg handler', () => {
   });
 
   it('throws HttpError 400 when image is missing', async () => {
-    const mockEnv = { GEMINI_API_KEY: 'test-key' } as Env;
+    const mockEnv = { GEMINI_API_KEY: 'test-key', DB: mockDb } as Env;
     await expect(handleRemoveBg(mockEnv, { image: '' })).rejects.toThrow(
       'Image data is required.'
     );
