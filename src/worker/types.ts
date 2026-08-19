@@ -9,6 +9,9 @@ export interface Env {
   /** D1 database. The starter uses five tables; the rest is yours. */
   DB: D1Database;
 
+  /** Gemini API Key for image background removal */
+  GEMINI_API_KEY?: string;
+
   /** Manyfold API base, e.g. https://api.manyfold.ai */
   MANYFOLD_API_BASE_URL?: string;
   /** "production" enables https-only and private-IP checks on agent URLs. */

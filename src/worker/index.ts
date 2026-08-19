@@ -35,6 +35,7 @@ import {
   verifyAgent,
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
+import { handleRemoveBg, type RemoveBgRequest } from './remove-bg';
 
 const SERVICE = 'cloudflare-worker-starter';
 
@@ -73,10 +74,10 @@ const adminHeaderOk = (c: { env: Env; req: { header: (name: string) => string | 
   return safeEqual(c.req.header('x-admin-password') ?? '', required);
 };
 
-// Everything except /api/health and /api/state needs the password (when one is set).
+// Everything except /api/health, /api/state, and /api/remove-bg needs the password (when one is set).
 app.use('/api/*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  if (path !== '/api/health' && path !== '/api/state' && !adminHeaderOk(c)) {
+  if (path !== '/api/health' && path !== '/api/state' && path !== '/api/remove-bg' && !adminHeaderOk(c)) {
     throw new HttpError(401, 'admin_password_invalid', 'This deployment requires the admin password.');
   }
   await next();
@@ -167,6 +168,15 @@ app.post('/api/agents/:agentId/chat', async (c) => {
     message: body.message,
     waitUntil: (promise) => c.executionCtx.waitUntil(promise),
   });
+});
+
+app.post('/api/remove-bg', async (c) => {
+  const body = (await c.req.json().catch(() => null)) as RemoveBgRequest | null;
+  if (!body || !body.image) {
+    throw new HttpError(400, 'bad_request', 'Body must be JSON with a string property "image".');
+  }
+  const result = await handleRemoveBg(c.env, body);
+  return c.json(result);
 });
 
 app.all('/api/*', () => {
