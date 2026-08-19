@@ -95,13 +95,13 @@ Return a JSON object with the following schema:
   }
 
   // 2. Manyfold Agent A2A fallback method if a Manyfold Agent is connected
-  try {
-    const connectedAgents = await listConnectedAgents(env);
-    if (connectedAgents && connectedAgents.length > 0) {
-      const selectedAgent = body.agentId
-        ? connectedAgents.find((a) => a.agentId === body.agentId) || connectedAgents[0]
-        : connectedAgents[0];
+  const connectedAgents = await listConnectedAgents(env).catch(() => []);
+  if (connectedAgents && connectedAgents.length > 0) {
+    const selectedAgent = body.agentId
+      ? connectedAgents.find((a) => a.agentId === body.agentId) || connectedAgents[0]
+      : connectedAgents[0];
 
+    try {
       const cred = await credentialFor(env, selectedAgent.agentId);
 
       const controller = new AbortController();
@@ -121,13 +121,15 @@ Return a JSON object with the following schema:
                 },
                 {
                   kind: 'text',
-                  text: `Analyze the main subject in this image and extract its precise boundary contour.
-Return JSON ONLY:
+                  text: `Analyze the main subject in this image and extract its precise boundary contour for background removal.
+Return JSON ONLY with exact format:
 {
-  "label": "short description of subject",
+  "label": "description of subject",
   "svgPath": "smooth SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000)",
   "boundingBox": [ymin, xmin, ymax, xmax]
-}`,
+}
+
+Image Data URI: data:${mimeType};base64,${base64Data}`,
                 },
               ],
             },
@@ -136,11 +138,12 @@ Return JSON ONLY:
         });
 
         const text = snapshot.text || '';
-        const cleanJson = text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+        const jsonMatch = text.match(/\{[\s\S]*"svgPath"[\s\S]*\}/);
+        const cleanJson = jsonMatch ? jsonMatch[0] : text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
         const result = JSON.parse(cleanJson) as RemoveBgResponse;
 
         if (!result.svgPath) {
-          throw new Error('Manyfold Agent did not return a valid SVG path mask.');
+          throw new Error(`Agent "${selectedAgent.name}" returned response without a valid svgPath.`);
         }
 
         return {
@@ -151,10 +154,12 @@ Return JSON ONLY:
       } finally {
         clearTimeout(timer);
       }
+    } catch (err: unknown) {
+      if (err instanceof HttpError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Manyfold A2A Error:', message);
+      throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
     }
-  } catch (err: unknown) {
-    if (err instanceof HttpError) throw err;
-    console.error('Manyfold A2A Error:', err);
   }
 
   throw new HttpError(
