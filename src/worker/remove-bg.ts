@@ -107,12 +107,16 @@ Return a JSON object with the following schema:
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 60_000);
 
+      const messageId = `rmbg-${crypto.randomUUID()}`;
+
       try {
         const snapshot = await consumeA2AStream({
           cred,
           params: {
             message: {
+              kind: 'message',
               role: 'user',
+              messageId,
               parts: [
                 {
                   kind: 'inline-data',
@@ -131,6 +135,7 @@ Return JSON ONLY with exact format:
                 },
               ],
             },
+            configuration: { acceptedOutputModes: ['text/plain', 'application/json'] },
           },
           signal: controller.signal,
         });
