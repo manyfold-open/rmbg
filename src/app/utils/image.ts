@@ -62,6 +62,7 @@ export async function removeBackgroundLocal(
   onProgress?: (key: string, current: number, total: number) => void
 ): Promise<string> {
   const config: Config = {
+    publicPath: 'https://staticimgly.com/1.7.0/resources/',
     progress: (key, current, total) => {
       if (onProgress) {
         onProgress(key, current, total);
