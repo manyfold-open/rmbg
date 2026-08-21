@@ -113,8 +113,8 @@ export function App() {
     setPostProcess(DEFAULT_POST_PROCESS);
 
     try {
-      // 1. Compress image payload preserving alpha channel for AI vision processing
-      const compressedImage = await compressImageForAI(dataUrl, 2048, 0.92);
+      // 1. Compress image payload preserving alpha channel for AI vision processing under 600KB payload limit
+      const compressedImage = await compressImageForAI(dataUrl, 1536, 0.85);
 
       // 2. Call background removal API powered by Manyfold Agent / Gemini 3.6 Flash
       const response = await fetch('/api/remove-bg', {

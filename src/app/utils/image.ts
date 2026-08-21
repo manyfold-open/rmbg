@@ -1,10 +1,16 @@
 /**
- * Compress and scale down an image data URL for AI vision processing if necessary.
- * Preserves transparency/alpha channel for PNG and WebP images, and allows up to 2048px dimensions.
+ * Compress and scale down an image data URL for AI vision processing.
+ * Guarantees payload size stays under ~600KB to prevent HTTP 413 (Request Body Too Large) errors when calling Manyfold Agent / Workers API.
  */
-export async function compressImageForAI(dataUrl: string, maxDim = 2048, quality = 0.92): Promise<string> {
-  // If it's reasonably small (< 1.5MB) or SVG, return directly
-  if (dataUrl.length < 1500 * 1024 || dataUrl.startsWith('data:image/svg+xml')) {
+export async function compressImageForAI(
+  dataUrl: string,
+  maxDim = 1536,
+  quality = 0.85
+): Promise<string> {
+  const MAX_BASE64_LEN = 600 * 1024; // 600KB character limit (~450KB binary)
+
+  // If already under size limit or SVG, return directly
+  if (dataUrl.length <= MAX_BASE64_LEN || dataUrl.startsWith('data:image/svg+xml')) {
     return dataUrl;
   }
 
@@ -22,35 +28,53 @@ export async function compressImageForAI(dataUrl: string, maxDim = 2048, quality
         height = img.height || 800;
       }
 
-      if (width <= maxDim && height <= maxDim && dataUrl.length < 2500 * 1024) {
-        return resolve(dataUrl);
-      }
+      let currentMaxDim = Math.min(maxDim, Math.max(width, height));
 
-      // Compute scaled dimensions preserving aspect ratio
-      if (width > height) {
-        if (width > maxDim) {
-          height = Math.round((height * maxDim) / width);
-          width = maxDim;
+      const attemptCompress = (targetDim: number, currentQuality: number): string => {
+        let w = width;
+        let h = height;
+        if (w > h) {
+          if (w > targetDim) {
+            h = Math.round((h * targetDim) / w);
+            w = targetDim;
+          }
+        } else {
+          if (h > targetDim) {
+            w = Math.round((w * targetDim) / h);
+            h = targetDim;
+          }
         }
-      } else {
-        if (height > maxDim) {
-          width = Math.round((width * maxDim) / height);
-          height = maxDim;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return dataUrl;
+
+        ctx.drawImage(img, 0, 0, w, h);
+
+        if (preserveAlpha) {
+          // Try webp first if supported for alpha + compression, fallback to png
+          const webpResult = canvas.toDataURL('image/webp', currentQuality);
+          if (webpResult.length <= MAX_BASE64_LEN) return webpResult;
+
+          const pngResult = canvas.toDataURL('image/png');
+          if (pngResult.length <= MAX_BASE64_LEN) return pngResult;
         }
+
+        return canvas.toDataURL('image/jpeg', currentQuality);
+      };
+
+      // Iterative downsizing until payload is under limit
+      let result = attemptCompress(currentMaxDim, quality);
+      let stepDim = currentMaxDim;
+
+      while (result.length > MAX_BASE64_LEN && stepDim > 400) {
+        stepDim = Math.round(stepDim * 0.8);
+        result = attemptCompress(stepDim, Math.max(0.6, quality - 0.1));
       }
 
-      const canvas = document.createElement('canvas');
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return resolve(dataUrl);
-
-      ctx.drawImage(img, 0, 0, width, height);
-      if (preserveAlpha) {
-        resolve(canvas.toDataURL('image/png'));
-      } else {
-        resolve(canvas.toDataURL('image/jpeg', quality));
-      }
+      resolve(result);
     };
 
     img.onerror = () => resolve(dataUrl);
