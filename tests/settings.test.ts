@@ -184,6 +184,18 @@ describe('/api/settings and Cloudflare R2 endpoints', () => {
       text: 'Done',
       progressText: '',
       terminal: true,
+      final: true,
+      diagnostics: {
+        events: 1,
+        lastKind: 'status',
+        state: 'completed',
+        taskId: 't1',
+        contextId: 'c1',
+        imageMimeType: 'image/png',
+        imageLength: 100,
+        imageArtifact: true,
+        final: true,
+      },
       image: {
         mimeType: 'image/png',
         data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
