@@ -1,8 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "agt-agqbuknba5yirdoa6h3pbfuadq",
+  "name": "rmbg",
   "main": "./src/worker/index.ts",
   "compatibility_date": "2026-08-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "observability": {
     "enabled": true
   },
