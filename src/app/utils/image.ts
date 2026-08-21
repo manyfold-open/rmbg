@@ -1,3 +1,5 @@
+import { removeBackground, type Config } from '@imgly/background-removal';
+
 /**
  * Compress and scale down an image data URL for AI vision processing.
  * Limits max dimension (e.g. 1024px) keeping aspect ratio, and exports JPEG.
@@ -50,3 +52,24 @@ export async function compressImageForAI(dataUrl: string, maxDim = 1024, quality
     img.src = dataUrl;
   });
 }
+
+/**
+ * Performs client-side pixel-perfect neural network background removal using @imgly/background-removal.
+ * Returns an object URL for the transparent PNG cutout image.
+ */
+export async function removeBackgroundLocal(
+  imageSource: string | Blob | File,
+  onProgress?: (key: string, current: number, total: number) => void
+): Promise<string> {
+  const config: Config = {
+    progress: (key, current, total) => {
+      if (onProgress) {
+        onProgress(key, current, total);
+      }
+    },
+  };
+
+  const blob = await removeBackground(imageSource, config);
+  return URL.createObjectURL(blob);
+}
+

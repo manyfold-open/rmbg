@@ -12,12 +12,14 @@ export interface BgConfig {
 
 interface ComparisonSliderProps {
   originalImage: string;
+  cutoutImage?: string | null;
   svgPath: string | null;
   bgConfig: BgConfig;
 }
 
 export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
   originalImage,
+  cutoutImage,
   svgPath,
   bgConfig,
 }) => {
@@ -109,7 +111,9 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
     >
       {/* 1. Base Layer: Removed Background Foreground Output */}
       <div className="slider-layer after-layer">
-        {svgPath ? (
+        {cutoutImage ? (
+          <img src={cutoutImage} alt="Cutout Preview" className="full-image" />
+        ) : svgPath ? (
           <div className="svg-masked-wrapper">
             <svg
               viewBox="0 0 1000 1000"

@@ -38,9 +38,80 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
     }
   }
 
+  // 1. Prioritize Manyfold Agent A2A method if a Manyfold Agent is connected
+  const connectedAgents = await listConnectedAgents(env).catch(() => []);
+  if (connectedAgents && connectedAgents.length > 0) {
+    const selectedAgent = body.agentId
+      ? connectedAgents.find((a) => a.agentId === body.agentId) || connectedAgents[0]
+      : connectedAgents[0];
+
+    try {
+      const cred = await credentialFor(env, selectedAgent.agentId);
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 60_000);
+
+      const messageId = `rmbg-${crypto.randomUUID()}`;
+
+      try {
+        const snapshot = await consumeA2AStream({
+          cred,
+          params: {
+            message: {
+              kind: 'message',
+              role: 'user',
+              messageId,
+              parts: [
+                {
+                  kind: 'inline-data',
+                  mimeType,
+                  data: base64Data,
+                },
+                {
+                  kind: 'text',
+                  text: `Analyze all main foreground subjects in the attached image and extract their precise boundary contour for background removal.
+Return JSON ONLY with exact format:
+{
+  "label": "description of all main foreground subjects",
+  "svgPath": "smooth closed SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000). Must start with 'M', use bezier curves or fine-grained points to outline the subject tightly, and close subpaths with 'Z'.",
+  "boundingBox": [ymin, xmin, ymax, xmax]
+}`,
+                },
+              ],
+            },
+            configuration: { acceptedOutputModes: ['text/plain', 'application/json'] },
+          },
+          signal: controller.signal,
+        });
+
+        const text = snapshot.text || '';
+        const jsonMatch = text.match(/\{[\s\S]*"svgPath"[\s\S]*\}/);
+        const cleanJson = jsonMatch ? jsonMatch[0] : text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+        const result = JSON.parse(cleanJson) as RemoveBgResponse;
+
+        if (!result.svgPath) {
+          throw new Error(`Agent "${selectedAgent.name}" returned response without a valid svgPath.`);
+        }
+
+        return {
+          label: result.label || selectedAgent.name,
+          svgPath: result.svgPath,
+          boundingBox: result.boundingBox || [0, 0, 1000, 1000],
+        };
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (err: unknown) {
+      if (err instanceof HttpError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('Manyfold A2A Error:', message);
+      throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
+    }
+  }
+
   const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
 
-  // 1. Direct Gemini API Key method if configured
+  // 2. Direct Gemini API Key fallback method if configured
   if (apiKey) {
     const baseUrl = env.MANYFOLD_API_BASE_URL && (typeof process !== 'undefined' ? process.env?.GOOGLE_GEMINI_BASE_URL : undefined);
 
@@ -92,77 +163,6 @@ Return a JSON object with the following schema:
       const message = err instanceof Error ? err.message : String(err);
       console.error('RemoveBg Gemini Error:', message);
       throw new HttpError(500, 'gemini_error', `Failed to process image with Gemini API: ${message}`);
-    }
-  }
-
-  // 2. Manyfold Agent A2A fallback method if a Manyfold Agent is connected
-  const connectedAgents = await listConnectedAgents(env).catch(() => []);
-  if (connectedAgents && connectedAgents.length > 0) {
-    const selectedAgent = body.agentId
-      ? connectedAgents.find((a) => a.agentId === body.agentId) || connectedAgents[0]
-      : connectedAgents[0];
-
-    try {
-      const cred = await credentialFor(env, selectedAgent.agentId);
-
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60_000);
-
-      const messageId = `rmbg-${crypto.randomUUID()}`;
-
-      try {
-        const snapshot = await consumeA2AStream({
-          cred,
-          params: {
-            message: {
-              kind: 'message',
-              role: 'user',
-              messageId,
-              parts: [
-                {
-                  kind: 'inline-data',
-                  mimeType,
-                  data: base64Data,
-                },
-                {
-                  kind: 'text',
-                  text: `Analyze all main foreground subjects in the attached image and extract their precise boundary contour for background removal.
-Return JSON ONLY with exact format:
-{
-  "label": "description of all main foreground subjects",
-  "svgPath": "smooth closed SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000). Must start with 'M' and close subpaths with 'Z'.",
-  "boundingBox": [ymin, xmin, ymax, xmax]
-}`,
-                },
-              ],
-            },
-            configuration: { acceptedOutputModes: ['text/plain', 'application/json'] },
-          },
-          signal: controller.signal,
-        });
-
-        const text = snapshot.text || '';
-        const jsonMatch = text.match(/\{[\s\S]*"svgPath"[\s\S]*\}/);
-        const cleanJson = jsonMatch ? jsonMatch[0] : text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
-        const result = JSON.parse(cleanJson) as RemoveBgResponse;
-
-        if (!result.svgPath) {
-          throw new Error(`Agent "${selectedAgent.name}" returned response without a valid svgPath.`);
-        }
-
-        return {
-          label: result.label || selectedAgent.name,
-          svgPath: result.svgPath,
-          boundingBox: result.boundingBox || [0, 0, 1000, 1000],
-        };
-      } finally {
-        clearTimeout(timer);
-      }
-    } catch (err: unknown) {
-      if (err instanceof HttpError) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('Manyfold A2A Error:', message);
-      throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
     }
   }
 

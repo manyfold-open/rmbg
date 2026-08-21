@@ -4,6 +4,7 @@ import type { BgConfig } from './ComparisonSlider';
 
 interface ExportToolbarProps {
   originalImage: string;
+  cutoutImage?: string | null;
   svgPath: string | null;
   bgConfig: BgConfig;
   onReset: () => void;
@@ -11,6 +12,7 @@ interface ExportToolbarProps {
 
 export const ExportToolbar: React.FC<ExportToolbarProps> = ({
   originalImage,
+  cutoutImage,
   svgPath,
   bgConfig,
   onReset,
@@ -65,7 +67,16 @@ export const ExportToolbar: React.FC<ExportToolbarProps> = ({
       }
 
       // 2. Render Cutout Foreground Subject
-      if (svgPath) {
+      if (cutoutImage) {
+        const cutoutImg = new Image();
+        cutoutImg.crossOrigin = 'anonymous';
+        cutoutImg.src = cutoutImage;
+        await new Promise<void>((res) => {
+          cutoutImg.onload = () => res();
+          cutoutImg.onerror = () => res();
+        });
+        ctx.drawImage(cutoutImg, 0, 0, width, height);
+      } else if (svgPath) {
         ctx.save();
         const path2D = new Path2D(svgPath);
 

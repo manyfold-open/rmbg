@@ -9,10 +9,11 @@ import AgentPicker from './components/AgentPicker';
 import type { ConnectedAgent } from '../shared/types';
 import { api } from './api';
 
-import { compressImageForAI } from './utils/image';
+import { compressImageForAI, removeBackgroundLocal } from './utils/image';
 
 export function App() {
   const [originalImage, setOriginalImage] = useState<string | null>(null);
+  const [cutoutImage, setCutoutImage] = useState<string | null>(null);
   const [svgPath, setSvgPath] = useState<string | null>(null);
   const [subjectLabel, setSubjectLabel] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -50,32 +51,53 @@ export function App() {
     setOriginalImage(dataUrl);
     setIsLoading(true);
     setErrorMsg(null);
+    setCutoutImage(null);
     setSvgPath(null);
     setSubjectLabel(null);
 
     try {
-      // Compress payload for AI analysis to prevent HTTP 413
-      const compressedImage = await compressImageForAI(dataUrl, 1024, 0.85);
+      // 1. Initiate pixel-perfect client-side neural net background removal
+      const localTask = removeBackgroundLocal(dataUrl)
+        .then((url) => {
+          setCutoutImage(url);
+          return url;
+        })
+        .catch((err) => {
+          console.warn('Local background removal warning:', err);
+          return null;
+        });
 
-      const response = await fetch('/api/remove-bg', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          image: compressedImage,
-          ...(selectedAgentId ? { agentId: selectedAgentId } : {}),
-        }),
+      // 2. Initiate AI vision analysis & label detection
+      const apiTask = (async () => {
+        const compressedImage = await compressImageForAI(dataUrl, 1024, 0.85);
+        const response = await fetch('/api/remove-bg', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            image: compressedImage,
+            ...(selectedAgentId ? { agentId: selectedAgentId } : {}),
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setSvgPath(data.svgPath);
+          setSubjectLabel(data.label || '辨識成功');
+          return data;
+        }
+        return null;
+      })().catch((err) => {
+        console.warn('AI Vision API warning:', err);
+        return null;
       });
 
-      if (!response.ok) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error?.message || `API Error (${response.status})`);
-      }
+      const [localRes, apiRes] = await Promise.all([localTask, apiTask]);
 
-      const data = await response.json();
-      setSvgPath(data.svgPath);
-      setSubjectLabel(data.label || '辨識成功');
+      if (!localRes && !apiRes) {
+        throw new Error('去背處理失敗：無法生成透明背景圖片。');
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('Background removal error:', message);
@@ -87,6 +109,7 @@ export function App() {
 
   const handleReset = () => {
     setOriginalImage(null);
+    setCutoutImage(null);
     setSvgPath(null);
     setSubjectLabel(null);
     setErrorMsg(null);
@@ -223,6 +246,7 @@ export function App() {
 
               <ComparisonSlider
                 originalImage={originalImage}
+                cutoutImage={cutoutImage}
                 svgPath={svgPath}
                 bgConfig={bgConfig}
               />
@@ -234,6 +258,7 @@ export function App() {
 
               <ExportToolbar
                 originalImage={originalImage}
+                cutoutImage={cutoutImage}
                 svgPath={svgPath}
                 bgConfig={bgConfig}
                 onReset={handleReset}
