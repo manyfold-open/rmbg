@@ -60,12 +60,12 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
             },
           },
           `You are an expert computer vision model specializing in image segmentation and background removal.
-Analyze the main subject in this image (e.g., person, pet, product, vehicle, object).
-Extract the precise boundary contour of the main subject.
+Analyze all main foreground subjects in this image (e.g. people, pets, products, objects, items).
+Extract the precise boundary contour outlining all main foreground subjects, excluding only background elements.
 Return a JSON object with the following schema:
 {
-  "label": "short description of the subject",
-  "svgPath": "smooth SVG path 'd' attribute string outlining the subject tightly in normalized coordinates (viewBox 0 0 1000 1000). Use bezier curves (C, S, Q) and line segments (L) so the contour fits smoothly around the subject.",
+  "label": "short description of all main foreground subjects",
+  "svgPath": "smooth closed SVG path 'd' attribute string outlining all main subjects tightly in normalized coordinates (viewBox 0 0 1000 1000). Start with 'M', use bezier curves (C, S, Q) and line segments (L), and close every subpath with 'Z'. Coordinates must span 0 to 1000 where (0,0) is top-left and (1000,1000) is bottom-right.",
   "boundingBox": [ymin, xmin, ymax, xmax]
 }`,
         ],
@@ -75,7 +75,8 @@ Return a JSON object with the following schema:
       });
 
       const text = response.text || '';
-      const cleanJson = text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
+      const jsonMatch = text.match(/\{[\s\S]*"svgPath"[\s\S]*\}/);
+      const cleanJson = jsonMatch ? jsonMatch[0] : text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
       const result = JSON.parse(cleanJson) as RemoveBgResponse;
 
       if (!result.svgPath) {
@@ -125,11 +126,11 @@ Return a JSON object with the following schema:
                 },
                 {
                   kind: 'text',
-                  text: `Analyze the main subject in the attached image and extract its precise boundary contour for background removal.
+                  text: `Analyze all main foreground subjects in the attached image and extract their precise boundary contour for background removal.
 Return JSON ONLY with exact format:
 {
-  "label": "description of subject",
-  "svgPath": "smooth SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000)",
+  "label": "description of all main foreground subjects",
+  "svgPath": "smooth closed SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000). Must start with 'M' and close subpaths with 'Z'.",
   "boundingBox": [ymin, xmin, ymax, xmax]
 }`,
                 },

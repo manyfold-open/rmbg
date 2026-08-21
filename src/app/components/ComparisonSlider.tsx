@@ -113,21 +113,23 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
           <div className="svg-masked-wrapper">
             <svg
               viewBox="0 0 1000 1000"
-              preserveAspectRatio="none"
-              className="svg-mask-defs"
+              preserveAspectRatio="xMidYMid meet"
+              className="masked-image-svg"
+              style={{ width: '100%', height: '100%' }}
             >
               <defs>
                 <clipPath id="subject-clip-path" clipPathUnits="userSpaceOnUse">
                   <path d={svgPath} />
                 </clipPath>
               </defs>
+              <image
+                href={originalImage}
+                width="1000"
+                height="1000"
+                preserveAspectRatio="none"
+                clipPath="url(#subject-clip-path)"
+              />
             </svg>
-            <img
-              src={originalImage}
-              alt="Removed Background Subject"
-              className="masked-image"
-              style={{ clipPath: 'url(#subject-clip-path)' }}
-            />
           </div>
         ) : (
           <img src={originalImage} alt="Cutout Preview" className="full-image" />

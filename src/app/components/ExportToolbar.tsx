@@ -82,7 +82,7 @@ export const ExportToolbar: React.FC<ExportToolbarProps> = ({
           tCtx.scale(scaleX, scaleY);
           tCtx.fill(path2D);
           tCtx.globalCompositeOperation = 'source-in';
-          tCtx.scale(1 / scaleX, 1 / scaleY);
+          tCtx.setTransform(1, 0, 0, 1, 0, 0);
           tCtx.drawImage(img, 0, 0, width, height);
           ctx.drawImage(transformCanvas, 0, 0);
         } else {
