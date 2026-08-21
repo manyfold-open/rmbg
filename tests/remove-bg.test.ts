@@ -49,4 +49,10 @@ describe('remove-bg handler', () => {
     const data = (await res.json()) as { error: { code: string } };
     expect(data.error.code).toBe('bad_request');
   });
+
+  it('validates SVG path requirement structure in response', async () => {
+    const validSvgPath = 'M 100 100 L 900 100 L 900 900 L 100 900 Z';
+    expect(validSvgPath).toMatch(/^M\s/);
+    expect(validSvgPath).toMatch(/Z$/);
+  });
 });

@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useId } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import type { BgConfig, PostProcessConfig } from '../types/studio';
 import { DEFAULT_POST_PROCESS } from '../types/studio';
@@ -147,6 +147,8 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
 
   const effectivePos = forceShowOriginal ? 100 : sliderPos;
 
+  const clipPathId = `subject-clip-path-${useId().replace(/:/g, '')}`;
+
   return (
     <div
       ref={containerRef}
@@ -166,12 +168,12 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
           <div className="svg-masked-wrapper" style={getCutoutFilterStyle()}>
             <svg
               viewBox="0 0 1000 1000"
-              preserveAspectRatio="xMidYMid meet"
+              preserveAspectRatio="none"
               className="masked-image-svg"
               style={{ width: '100%', height: '100%' }}
             >
               <defs>
-                <clipPath id="subject-clip-path" clipPathUnits="userSpaceOnUse">
+                <clipPath id={clipPathId} clipPathUnits="userSpaceOnUse">
                   <path d={svgPath} />
                 </clipPath>
               </defs>
@@ -180,7 +182,7 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
                 width="1000"
                 height="1000"
                 preserveAspectRatio="none"
-                clipPath="url(#subject-clip-path)"
+                clipPath={`url(#${clipPathId})`}
               />
             </svg>
           </div>

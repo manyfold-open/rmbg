@@ -1,5 +1,3 @@
-import { removeBackground, type Config } from '@imgly/background-removal';
-
 /**
  * Compress and scale down an image data URL for AI vision processing.
  * Limits max dimension (e.g. 1024px) keeping aspect ratio, and exports JPEG.
@@ -54,23 +52,50 @@ export async function compressImageForAI(dataUrl: string, maxDim = 1024, quality
 }
 
 /**
- * Performs client-side pixel-perfect neural network background removal using @imgly/background-removal.
- * Returns an object URL for the transparent PNG cutout image.
+ * Creates a pixel-accurate transparent PNG cutout image from an original image and an SVG path (in 0..1000 viewBox coordinates).
  */
-export async function removeBackgroundLocal(
-  imageSource: string | Blob | File,
-  onProgress?: (key: string, current: number, total: number) => void
+export async function createCutoutFromSvgPath(
+  originalImageUrl: string,
+  svgPath: string
 ): Promise<string> {
-  const config: Config = {
-    publicPath: 'https://staticimgly.com/1.7.0/resources/',
-    progress: (key, current, total) => {
-      if (onProgress) {
-        onProgress(key, current, total);
-      }
-    },
-  };
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const width = img.naturalWidth || img.width || 800;
+      const height = img.naturalHeight || img.height || 800;
 
-  const blob = await removeBackground(imageSource, config);
-  return URL.createObjectURL(blob);
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        return resolve(originalImageUrl);
+      }
+
+      try {
+        const path2D = new Path2D(svgPath);
+        const scaleX = width / 1000;
+        const scaleY = height / 1000;
+
+        ctx.save();
+        ctx.scale(scaleX, scaleY);
+        ctx.fill(path2D);
+        ctx.restore();
+
+        ctx.globalCompositeOperation = 'source-in';
+        ctx.drawImage(img, 0, 0, width, height);
+
+        resolve(canvas.toDataURL('image/png'));
+      } catch (err) {
+        console.error('Failed to render cutout from SVG path:', err);
+        resolve(originalImageUrl);
+      }
+    };
+    img.onerror = () => resolve(originalImageUrl);
+    img.src = originalImageUrl;
+  });
 }
+
 

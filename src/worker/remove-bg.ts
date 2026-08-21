@@ -16,6 +16,23 @@ export interface RemoveBgResponse {
   boundingBox: [number, number, number, number];
 }
 
+function parseRemoveBgJson(text: string): RemoveBgResponse {
+  let cleaned = text.trim();
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  }
+  const jsonMatch = cleaned.match(/\{[\s\S]*"svgPath"[\s\S]*\}/);
+  if (jsonMatch) {
+    cleaned = jsonMatch[0];
+  }
+  try {
+    return JSON.parse(cleaned) as RemoveBgResponse;
+  } catch {
+    const sanitized = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
+    return JSON.parse(sanitized) as RemoveBgResponse;
+  }
+}
+
 export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<RemoveBgResponse> {
   if (!body.image) {
     throw new HttpError(400, 'missing_image', 'Image data is required.');
@@ -37,6 +54,8 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
       }
     }
   }
+
+  const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
 
   // 1. Prioritize Manyfold Agent A2A method if a Manyfold Agent is connected
   const connectedAgents = await listConnectedAgents(env).catch(() => []);
@@ -87,9 +106,7 @@ Return JSON ONLY with exact format:
         });
 
         const text = snapshot.text || '';
-        const jsonMatch = text.match(/\{[\s\S]*"svgPath"[\s\S]*\}/);
-        const cleanJson = jsonMatch ? jsonMatch[0] : text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
-        const result = JSON.parse(cleanJson) as RemoveBgResponse;
+        const result = parseRemoveBgJson(text);
 
         if (!result.svgPath) {
           throw new Error(`Agent "${selectedAgent.name}" returned response without a valid svgPath.`);
@@ -107,11 +124,12 @@ Return JSON ONLY with exact format:
       if (err instanceof HttpError) throw err;
       const message = err instanceof Error ? err.message : String(err);
       console.error('Manyfold A2A Error:', message);
-      throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
+      if (!apiKey) {
+        throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
+      }
+      console.warn('Falling back to direct Gemini API key after A2A failure.');
     }
   }
-
-  const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
 
   // 2. Direct Gemini API Key fallback method if configured
   if (apiKey) {
@@ -148,9 +166,7 @@ Return a JSON object with the following schema:
       });
 
       const text = response.text || '';
-      const jsonMatch = text.match(/\{[\s\S]*"svgPath"[\s\S]*\}/);
-      const cleanJson = jsonMatch ? jsonMatch[0] : text.replace(/^```json\s*/i, '').replace(/\s*```$/i, '').trim();
-      const result = JSON.parse(cleanJson) as RemoveBgResponse;
+      const result = parseRemoveBgJson(text);
 
       if (!result.svgPath) {
         throw new Error('Gemini API did not return a valid SVG path mask.');

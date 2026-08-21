@@ -11,7 +11,7 @@ import type { BgConfig, PostProcessConfig, HistoryItem, ToastMessage } from './t
 import { DEFAULT_POST_PROCESS } from './types/studio';
 import { api } from './api';
 
-import { compressImageForAI, removeBackgroundLocal } from './utils/image';
+import { compressImageForAI, createCutoutFromSvgPath } from './utils/image';
 
 const STORAGE_KEY_HISTORY = 'rmbg_atelier_history';
 
@@ -113,66 +113,55 @@ export function App() {
     setPostProcess(DEFAULT_POST_PROCESS);
 
     try {
-      // 1. Initiate pixel-perfect client-side neural net background removal
-      const localTask = removeBackgroundLocal(dataUrl)
-        .then((url) => {
-          setCutoutImage(url);
-          return url;
-        })
-        .catch((err) => {
-          console.warn('Local background removal warning:', err);
-          return null;
-        });
+      // 1. Compress image payload for Gemini 3.6 Flash AI vision processing
+      const compressedImage = await compressImageForAI(dataUrl, 1024, 0.85);
 
-      // 2. Initiate AI vision analysis & label detection
-      const apiTask = (async () => {
-        const compressedImage = await compressImageForAI(dataUrl, 1024, 0.85);
-        const response = await fetch('/api/remove-bg', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            image: compressedImage,
-            ...(selectedAgentId ? { agentId: selectedAgentId } : {}),
-          }),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          setSvgPath(data.svgPath);
-          setSubjectLabel(data.label || '辨識成功');
-          return data;
-        }
-        return null;
-      })().catch((err) => {
-        console.warn('AI Vision API warning:', err);
-        return null;
+      // 2. Call background removal API powered by Gemini 3.6 Flash / Manyfold Agent
+      const response = await fetch('/api/remove-bg', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          image: compressedImage,
+          ...(selectedAgentId ? { agentId: selectedAgentId } : {}),
+        }),
       });
 
-      const [localRes, apiRes] = await Promise.all([localTask, apiTask]);
-
-      if (!localRes && !apiRes) {
-        throw new Error('去背處理失敗：無法生成透明背景圖片。');
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const errDetail = errorData.error?.message || errorData.message || `HTTP ${response.status}`;
+        throw new Error(`去背處理失敗 (${errDetail})`);
       }
 
-      const finalCutout = localRes;
-      const finalLabel = apiRes?.label || '去背圖片';
-      const finalSvg = apiRes?.svgPath || null;
+      const data = await response.json();
+      if (!data.svgPath) {
+        throw new Error('去背處理失敗：未能取得 Gemini 3.6 Flash 輪廓數據。');
+      }
+
+      const extractedSvgPath = data.svgPath;
+      const extractedLabel = data.label || '辨識成功';
+
+      setSvgPath(extractedSvgPath);
+      setSubjectLabel(extractedLabel);
+
+      // 3. Generate high-precision transparent PNG cutout from Gemini 3.6 Flash SVG path
+      const generatedCutout = await createCutoutFromSvgPath(dataUrl, extractedSvgPath);
+      setCutoutImage(generatedCutout);
 
       saveToHistory({
         originalImage: dataUrl,
-        cutoutImage: finalCutout,
-        svgPath: finalSvg,
-        subjectLabel: finalLabel,
+        cutoutImage: generatedCutout,
+        svgPath: extractedSvgPath,
+        subjectLabel: extractedLabel,
       });
 
-      showToast(`✦ AI 去背與主體辨識完成 (${finalLabel})`, 'success');
+      showToast(`✦ AI 去背與主體辨識完成 (${extractedLabel})`, 'success');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('Background removal error:', message);
       setErrorMsg(message);
-      showToast('去背處理失敗', 'warning');
+      showToast(message, 'warning');
     } finally {
       setIsLoading(false);
     }
