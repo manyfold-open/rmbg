@@ -1,3 +1,4 @@
 wrangler.json
 .dev.vars
 *.wasm
+**/*.wasm
