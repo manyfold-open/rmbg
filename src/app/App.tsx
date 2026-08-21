@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Wand2, Sparkles, AlertCircle, RefreshCw, Layers, Link as LinkIcon, X } from 'lucide-react';
+import { Sparkles, AlertCircle, RefreshCw, Layers, Link as LinkIcon, X } from 'lucide-react';
 import { UploadZone } from './components/UploadZone';
 import { ComparisonSlider, type BgConfig } from './components/ComparisonSlider';
 import { BackgroundCustomizer } from './components/BackgroundCustomizer';
@@ -128,13 +128,13 @@ export function App() {
       <header className="app-topbar">
         <div className="brand">
           <div className="brand-mark">
-            <Wand2 size={24} />
+            <span>A</span>
           </div>
-          <div>
+          <div className="brand-text-group">
+            <span className="brand-tag">ATELIER STUDIO</span>
             <h1 className="brand-title">
-              Auto BG Remover <span className="badge-ai"><Sparkles size={12} /> Gemini & Manyfold AI</span>
+              Photo Editing & BG Remover <span className="badge-ai"><Sparkles size={12} /> AI Powered</span>
             </h1>
-            <p className="brand-subtitle">秒速自動去除背景，高清透明 PNG 下載與自訂背景編輯</p>
           </div>
         </div>
 

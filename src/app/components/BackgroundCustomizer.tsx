@@ -8,14 +8,14 @@ interface BackgroundCustomizerProps {
 }
 
 const PRESET_COLORS = [
-  { name: '純白', hex: '#FFFFFF' },
-  { name: '純黑', hex: '#111827' },
-  { name: '淺灰', hex: '#F3F4F6' },
-  { name: '粉紅馬卡龍', hex: '#FFD1DC' },
-  { name: '薄荷綠', hex: '#D4F0F0' },
-  { name: '薰衣草紫', hex: '#E6E6FA' },
-  { name: '寶藍色', hex: '#2563EB' },
-  { name: '夕陽橙', hex: '#FF9F43' },
+  { name: '純白 Studio', hex: '#FFFFFF' },
+  { name: '亞麻暖色 Linen', hex: '#FAF8F5' },
+  { name: '柔灰霧質 Neutral', hex: '#EFECE6' },
+  { name: '赤陶琥珀 Terracotta', hex: '#C56A38' },
+  { name: '暖砂大地 Sand', hex: '#E3D5CA' },
+  { name: '鼠尾草綠 Sage', hex: '#D9E4DD' },
+  { name: '深炭黑色 Slate', hex: '#1F1D1B' },
+  { name: '莫蘭迪藍 Fog Blue', hex: '#D0D7DE' },
 ];
 
 export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({ config, onChange }) => {

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { SlidersHorizontal } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 
 export type BgMode = 'transparent' | 'color' | 'image' | 'blur';
 
@@ -157,7 +157,8 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
       >
         <div className="slider-line" />
         <div className="slider-button">
-          <SlidersHorizontal size={16} />
+          <ChevronLeft size={12} className="handle-arrow" />
+          <ChevronRight size={12} className="handle-arrow" />
         </div>
       </div>
 

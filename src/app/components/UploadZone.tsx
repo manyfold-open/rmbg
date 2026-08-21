@@ -151,6 +151,15 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
 
   return (
     <div className="upload-container">
+      {/* Studio Header Bar */}
+      <div className="atelier-section-header">
+        <div className="header-meta">
+          <span className="atelier-label">ATELIER STUDIO</span>
+          <h2 className="atelier-heading">Library</h2>
+        </div>
+      </div>
+
+      {/* Main Studio Upload Hero Card */}
       <div
         className={`dropzone ${isDragOver ? 'drag-active' : ''} ${isLoading ? 'disabled' : ''}`}
         onDrop={handleDrop}
@@ -168,14 +177,14 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
         />
 
         <div className="dropzone-icon">
-          <UploadCloud size={48} className="pulse-icon" />
+          <UploadCloud size={32} className="pulse-icon" />
         </div>
 
         <h3 className="dropzone-title">拖曳圖片到此處，或點擊選擇檔案</h3>
-        <p className="dropzone-hint">支援 PNG, JPG, WEBP 格式（最大 15MB）</p>
+        <p className="dropzone-hint">支援 PNG, JPG, WEBP 高清格式（最大 15MB）</p>
 
         <button className="button primary select-btn" type="button" disabled={isLoading}>
-          <ImageIcon size={18} />
+          <ImageIcon size={16} />
           上傳圖片
         </button>
       </div>
@@ -187,14 +196,30 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
         </div>
       )}
 
-      {/* Sample Images section for quick testing */}
+      {/* Atelier Collection Grid Section */}
       <div className="samples-section">
         <div className="samples-header">
+          <div className="samples-title-group">
+            <span className="atelier-label">ATELIER COLLECTION</span>
+            <h3 className="samples-subtitle">快速嘗試範例與素材集</h3>
+          </div>
           <Sparkles size={16} className="sparkle-icon" />
-          <span>沒有圖片？嘗試範例測試：</span>
         </div>
 
         <div className="samples-grid">
+          {/* Import Card */}
+          <div
+            className="sample-card import-card"
+            onClick={() => !isLoading && fileInputRef.current?.click()}
+          >
+            <div className="import-icon-box">
+              <UploadCloud size={24} />
+            </div>
+            <span className="import-title">Import Photo</span>
+            <span className="import-sub">點擊選取自訂圖片</span>
+          </div>
+
+          {/* Preset Sample Cards with Atelier style tags */}
           {SAMPLE_IMAGES.map((sample, idx) => (
             <button
               key={idx}
@@ -208,10 +233,15 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
                 style={{
                   backgroundImage: `url("${svgToDataUrl(sample.svg)}")`,
                 }}
-              />
-              <span className="sample-name">
-                {sample.icon} {sample.name}
-              </span>
+              >
+                <span className="edited-badge">✦ EDITED</span>
+              </div>
+              <div className="sample-card-body">
+                <span className="sample-name">
+                  {sample.icon} {sample.name}
+                </span>
+                <span className="sample-meta">{sample.category} • Atelier Studio</span>
+              </div>
             </button>
           ))}
         </div>
