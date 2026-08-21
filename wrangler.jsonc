@@ -1,14 +1,14 @@
 {
-  "$schema": "rmbg/node_modules/wrangler/config-schema.json",
-  "name": "agt-agqbuknba5yirdoa6h3pbfuadq",
-  "main": "./rmbg/src/worker/index.ts",
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "rmbg",
+  "main": "./src/worker/index.ts",
   "compatibility_date": "2026-08-01",
   "observability": {
     "enabled": true
   },
   "upload_source_maps": true,
   "assets": {
-    "directory": "./rmbg/dist/client",
+    "directory": "./dist/client",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     "run_worker_first": ["/api/*"]
