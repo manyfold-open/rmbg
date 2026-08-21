@@ -1,17 +1,27 @@
 import { useState, useRef } from 'react';
-import { UploadCloud, Image as ImageIcon, Sparkles, AlertCircle } from 'lucide-react';
+import { UploadCloud, Image as ImageIcon, Sparkles, AlertCircle, Play } from 'lucide-react';
 
 interface UploadZoneProps {
   onImageSelected: (dataUrl: string) => void;
   isLoading: boolean;
 }
 
-// Built-in sample images generated using SVG/Canvas data URLs for instant offline/online testability
-const SAMPLE_IMAGES = [
+interface SampleItem {
+  id: string;
+  name: string;
+  category: 'Portrait' | 'Pet' | 'Product' | 'Object' | 'Fashion' | 'Art';
+  categoryLabel: string;
+  icon: string;
+  svg: string;
+}
+
+// Built-in high visual sample images generated using SVG data URLs
+const SAMPLE_IMAGES: SampleItem[] = [
   {
+    id: 'portrait-1',
     name: '人像攝影',
     category: 'Portrait',
-    bg: 'linear-gradient(135deg, #ff9a9e 0%, #fecfef 99%)',
+    categoryLabel: '人像',
     icon: '👤',
     svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
       <defs>
@@ -30,65 +40,86 @@ const SAMPLE_IMAGES = [
     </svg>`
   },
   {
+    id: 'pet-1',
     name: '可愛貓咪',
     category: 'Pet',
-    bg: 'linear-gradient(135deg, #a1c4fd 0%, #c2e9fb 100%)',
+    categoryLabel: '寵物',
     icon: '🐱',
     svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
       <rect width="400" height="400" fill="#F1F2F6"/>
-      <!-- Background wall -->
       <rect width="400" height="260" fill="#FFEAA7"/>
-      <!-- Cat Body -->
       <path d="M 130 350 C 130 200, 270 200, 270 350 Z" fill="#E67E22"/>
-      <!-- Cat Head -->
       <circle cx="200" cy="180" r="70" fill="#E67E22"/>
-      <!-- Ears -->
       <polygon points="140,140 160,80 180,130" fill="#D35400"/>
       <polygon points="220,130 240,80 260,140" fill="#D35400"/>
-      <!-- Eyes -->
       <ellipse cx="175" cy="170" rx="10" ry="14" fill="#2ECC71"/>
       <ellipse cx="225" cy="170" rx="10" ry="14" fill="#2ECC71"/>
-      <!-- Nose & Mouth -->
       <polygon points="195,190 205,190 200,196" fill="#E74C3C"/>
       <path d="M 190 202 Q 200 212 210 202" stroke="#333" stroke-width="3" fill="none"/>
     </svg>`
   },
   {
+    id: 'product-1',
     name: '咖啡拿鐵',
     category: 'Product',
-    bg: 'linear-gradient(135deg, #fdfbfb 0%, #ebedee 100%)',
+    categoryLabel: '商品',
     icon: '☕',
     svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
       <rect width="400" height="400" fill="#74B9FF"/>
-      <!-- Table surface -->
       <rect y="260" width="400" height="140" fill="#D63031"/>
-      <!-- Coffee Cup -->
       <path d="M 130 180 L 145 300 C 145 315, 255 315, 255 300 L 270 180 Z" fill="#FFFFFF"/>
       <ellipse cx="200" cy="180" rx="70" ry="15" fill="#6D4C41"/>
       <ellipse cx="200" cy="180" rx="45" ry="9" fill="#D7CCC8"/>
-      <!-- Handle -->
       <path d="M 265 200 C 310 200, 310 270, 255 270" stroke="#FFFFFF" stroke-width="16" fill="none" stroke-linecap="round"/>
     </svg>`
   },
   {
+    id: 'object-1',
     name: '復古相機',
     category: 'Object',
-    bg: 'linear-gradient(135deg, #89f7fe 0%, #66a6ff 100%)',
+    categoryLabel: '物件',
     icon: '📷',
     svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
       <rect width="400" height="400" fill="#F8EFBA"/>
-      <!-- Camera Body -->
       <rect x="90" y="150" width="220" height="140" rx="16" fill="#2C3A47"/>
       <rect x="90" y="150" width="220" height="40" fill="#CAD3C8"/>
-      <!-- Lens -->
       <circle cx="200" cy="220" r="50" fill="#1B1464"/>
       <circle cx="200" cy="220" r="38" fill="#00A8FF"/>
       <circle cx="185" cy="205" r="10" fill="#FFFFFF" opacity="0.6"/>
-      <!-- Flash / Shutter Button -->
       <rect x="120" y="130" width="30" height="20" rx="4" fill="#E74C3C"/>
+    </svg>`
+  },
+  {
+    id: 'fashion-1',
+    name: '高級墨鏡',
+    category: 'Fashion',
+    categoryLabel: '時尚',
+    icon: '🕶️',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+      <rect width="400" height="400" fill="#E3D5CA"/>
+      <path d="M 80 180 Q 150 140 200 180 Q 250 140 320 180 L 300 240 Q 250 260 200 220 Q 150 260 100 240 Z" fill="#1C1917"/>
+      <path d="M 95 185 C 130 160 180 170 185 220 C 140 235 110 220 95 185 Z" fill="#C56A38" opacity="0.8"/>
+      <path d="M 215 220 C 220 170 270 160 305 185 C 290 220 260 235 215 220 Z" fill="#C56A38" opacity="0.8"/>
+      <line x1="60" y1="180" x2="90" y2="180" stroke="#1C1917" stroke-width="8"/>
+      <line x1="310" y1="180" x2="340" y2="180" stroke="#1C1917" stroke-width="8"/>
+    </svg>`
+  },
+  {
+    id: 'art-1',
+    name: '雕塑典藏',
+    category: 'Art',
+    categoryLabel: '藝術',
+    icon: '🗿',
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 400 400">
+      <rect width="400" height="400" fill="#D9E4DD"/>
+      <path d="M 160 320 L 170 120 C 170 90, 230 90, 230 120 L 240 320 Z" fill="#78716C"/>
+      <circle cx="200" cy="110" r="45" fill="#A8A29E"/>
+      <rect x="150" y="320" width="100" height="40" rx="6" fill="#1C1917"/>
     </svg>`
   }
 ];
+
+const CATEGORIES = ['All', 'Portrait', 'Pet', 'Product', 'Object', 'Fashion', 'Art'] as const;
 
 function svgToDataUrl(svgString: string): string {
   const encoded = encodeURIComponent(svgString);
@@ -98,6 +129,7 @@ function svgToDataUrl(svgString: string): string {
 export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoading }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const processFile = (file: File) => {
@@ -148,6 +180,10 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
       processFile(e.target.files[0]);
     }
   };
+
+  const filteredSamples = selectedCategory === 'All'
+    ? SAMPLE_IMAGES
+    : SAMPLE_IMAGES.filter((s) => s.category === selectedCategory);
 
   return (
     <div className="upload-container">
@@ -206,23 +242,36 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
           <Sparkles size={16} className="sparkle-icon" />
         </div>
 
-        <div className="samples-grid">
-          {/* Import Card */}
-          <div
-            className="sample-card import-card"
-            onClick={() => !isLoading && fileInputRef.current?.click()}
-          >
-            <div className="import-icon-box">
-              <UploadCloud size={24} />
-            </div>
-            <span className="import-title">Import Photo</span>
-            <span className="import-sub">點擊選取自訂圖片</span>
-          </div>
+        {/* Category Filter Pills */}
+        <div className="category-pills">
+          {CATEGORIES.map((cat) => {
+            const labelMap: Record<string, string> = {
+              All: '全部 All',
+              Portrait: '人像 Portrait',
+              Pet: '寵物 Pet',
+              Product: '商品 Product',
+              Object: '物件 Object',
+              Fashion: '時尚 Fashion',
+              Art: '藝術 Art',
+            };
+            return (
+              <button
+                key={cat}
+                type="button"
+                className={`category-pill ${selectedCategory === cat ? 'active' : ''}`}
+                onClick={() => setSelectedCategory(cat)}
+              >
+                {labelMap[cat] || cat}
+              </button>
+            );
+          })}
+        </div>
 
-          {/* Preset Sample Cards with Atelier style tags */}
-          {SAMPLE_IMAGES.map((sample, idx) => (
+        <div className="samples-grid">
+          {/* Preset Sample Cards with Atelier style tags & hover overlays */}
+          {filteredSamples.map((sample) => (
             <button
-              key={idx}
+              key={sample.id}
               type="button"
               className="sample-card"
               onClick={() => onImageSelected(svgToDataUrl(sample.svg))}
@@ -235,6 +284,13 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
                 }}
               >
                 <span className="edited-badge">✦ EDITED</span>
+
+                {/* Hover Quick Action Overlay */}
+                <div className="sample-hover-overlay">
+                  <span className="overlay-btn">
+                    <Play size={12} fill="currentColor" /> ✦ 嘗試 AI 去背
+                  </span>
+                </div>
               </div>
               <div className="sample-card-body">
                 <span className="sample-name">

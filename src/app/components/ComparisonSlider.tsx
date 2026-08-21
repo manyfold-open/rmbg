@@ -1,20 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-
-export type BgMode = 'transparent' | 'color' | 'image' | 'blur';
-
-export interface BgConfig {
-  mode: BgMode;
-  color: string;
-  customImageUrl: string | null;
-  blurAmount: number;
-}
+import type { BgConfig, PostProcessConfig } from '../types/studio';
+import { DEFAULT_POST_PROCESS } from '../types/studio';
 
 interface ComparisonSliderProps {
   originalImage: string;
   cutoutImage?: string | null;
   svgPath: string | null;
   bgConfig: BgConfig;
+  postProcess?: PostProcessConfig;
+  forceShowOriginal?: boolean;
 }
 
 export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
@@ -22,6 +17,8 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
   cutoutImage,
   svgPath,
   bgConfig,
+  postProcess = DEFAULT_POST_PROCESS,
+  forceShowOriginal = false,
 }) => {
   const [sliderPos, setSliderPos] = useState<number>(50); // 0% to 100%
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -103,6 +100,53 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
     }
   };
 
+  // Build combined filter string for post-processing
+  const getCutoutFilterStyle = (): React.CSSProperties => {
+    const filters: string[] = [];
+
+    // Basic adjustments
+    if (postProcess.brightness !== 100) filters.push(`brightness(${postProcess.brightness}%)`);
+    if (postProcess.contrast !== 100) filters.push(`contrast(${postProcess.contrast}%)`);
+    if (postProcess.saturation !== 100) filters.push(`saturate(${postProcess.saturation}%)`);
+
+    // Preset filters
+    switch (postProcess.presetFilter) {
+      case 'vintage':
+        filters.push('sepia(35%) contrast(110%)');
+        break;
+      case 'warm':
+        filters.push('sepia(20%) saturate(120%)');
+        break;
+      case 'cool':
+        filters.push('hue-rotate(15deg) saturate(110%)');
+        break;
+      case 'mono':
+        filters.push('grayscale(100%)');
+        break;
+      case 'none':
+      default:
+        break;
+    }
+
+    // Drop shadow
+    if (postProcess.shadowEnable) {
+      filters.push(
+        `drop-shadow(0px ${postProcess.shadowOffsetY}px ${postProcess.shadowBlur}px ${postProcess.shadowColor})`
+      );
+    }
+
+    const filterString = filters.join(' ');
+    const transformString = `scale(${postProcess.scale}) translate(${postProcess.positionX}%, ${postProcess.positionY}%)`;
+
+    return {
+      filter: filterString || undefined,
+      transform: transformString,
+      transition: isDragging ? 'none' : 'filter 0.2s ease, transform 0.2s ease',
+    };
+  };
+
+  const effectivePos = forceShowOriginal ? 100 : sliderPos;
+
   return (
     <div
       ref={containerRef}
@@ -112,9 +156,14 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
       {/* 1. Base Layer: Removed Background Foreground Output */}
       <div className="slider-layer after-layer">
         {cutoutImage ? (
-          <img src={cutoutImage} alt="Cutout Preview" className="full-image" />
+          <img
+            src={cutoutImage}
+            alt="Cutout Preview"
+            className="full-image"
+            style={getCutoutFilterStyle()}
+          />
         ) : svgPath ? (
-          <div className="svg-masked-wrapper">
+          <div className="svg-masked-wrapper" style={getCutoutFilterStyle()}>
             <svg
               viewBox="0 0 1000 1000"
               preserveAspectRatio="xMidYMid meet"
@@ -136,14 +185,19 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
             </svg>
           </div>
         ) : (
-          <img src={originalImage} alt="Cutout Preview" className="full-image" />
+          <img
+            src={originalImage}
+            alt="Cutout Preview"
+            className="full-image"
+            style={getCutoutFilterStyle()}
+          />
         )}
       </div>
 
       {/* 2. Top Layer: Original Image (Clipped by slider position) */}
       <div
         className="slider-layer before-layer"
-        style={{ clipPath: `inset(0 ${100 - sliderPos}% 0 0)` }}
+        style={{ clipPath: `inset(0 ${100 - effectivePos}% 0 0)` }}
       >
         <img src={originalImage} alt="Original Image" className="full-image" />
       </div>
@@ -151,7 +205,7 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
       {/* 3. Slider Handle Divider */}
       <div
         className="slider-handle"
-        style={{ left: `${sliderPos}%` }}
+        style={{ left: `${effectivePos}%` }}
         onMouseDown={handleMouseDown}
         onTouchStart={handleMouseDown}
       >
@@ -163,10 +217,10 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
       </div>
 
       {/* Badges */}
-      <div className="slider-badge before-badge" style={{ opacity: sliderPos > 15 ? 1 : 0 }}>
+      <div className="slider-badge before-badge" style={{ opacity: effectivePos > 15 ? 1 : 0 }}>
         原圖 (Before)
       </div>
-      <div className="slider-badge after-badge" style={{ opacity: sliderPos < 85 ? 1 : 0 }}>
+      <div className="slider-badge after-badge" style={{ opacity: effectivePos < 85 ? 1 : 0 }}>
         去背結果 (After)
       </div>
     </div>
