@@ -6,7 +6,7 @@ import { DEFAULT_POST_PROCESS } from '../types/studio';
 interface ExportToolbarProps {
   originalImage: string;
   cutoutImage?: string | null;
-  svgPath: string | null;
+  svgPath?: string | null;
   bgConfig: BgConfig;
   postProcess?: PostProcessConfig;
   onReset: () => void;

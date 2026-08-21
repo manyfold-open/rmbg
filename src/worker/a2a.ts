@@ -184,6 +184,11 @@ export const TERMINAL_STATES = new Set([
   'auth-required',
 ]);
 
+export interface ImageArtifact {
+  mimeType: string;
+  data: string;
+}
+
 export interface StreamSnapshot {
   taskId: string | null;
   contextId: string | null;
@@ -193,6 +198,8 @@ export interface StreamSnapshot {
   /** Progress text from status.message, when it differs from the reply itself. */
   progressText: string;
   terminal: boolean;
+  /** Extracted image artifact, if returned by the agent. */
+  image?: ImageArtifact;
 }
 
 interface StreamAccumulator {
@@ -203,6 +210,8 @@ interface StreamAccumulator {
   order: string[];
   directText: string;
   statusText: string;
+  imageArtifacts: Map<string, ImageArtifact>;
+  imageOrder: string[];
 }
 
 export function createAccumulator(): StreamAccumulator {
@@ -214,6 +223,8 @@ export function createAccumulator(): StreamAccumulator {
     order: [],
     directText: '',
     statusText: '',
+    imageArtifacts: new Map(),
+    imageOrder: [],
   };
 }
 
@@ -231,6 +242,42 @@ function partsText(raw: unknown): string {
     )
     .filter(Boolean)
     .join('\n');
+}
+
+export function extractImageFromParts(parts: unknown): ImageArtifact | null {
+  if (!Array.isArray(parts)) return null;
+  for (const part of parts) {
+    if (!part || typeof part !== 'object') continue;
+    const p = part as Record<string, unknown>;
+
+    // 1. inlineData or kind === 'inline-data' / 'inlineData' / 'image'
+    const inline = (p.inlineData ?? (p.kind === 'inline-data' || p.kind === 'inlineData' || p.kind === 'image' ? p : null)) as Record<string, unknown> | null;
+    if (inline) {
+      const mimeType = String(inline.mimeType ?? p.mimeType ?? 'image/png');
+      const data = String(inline.data ?? inline.bytes ?? p.data ?? p.bytes ?? '');
+      if (data && (mimeType.startsWith('image/') || mimeType === 'application/octet-stream')) {
+        return { mimeType: mimeType === 'application/octet-stream' ? 'image/png' : mimeType, data };
+      }
+    }
+
+    // 2. fileUri / url / uri / fileData
+    const fileData = (p.fileData ?? null) as Record<string, unknown> | null;
+    const fileUri = String(p.fileUri ?? p.url ?? p.uri ?? fileData?.fileUri ?? fileData?.url ?? fileData?.uri ?? '');
+    if (fileUri) {
+      const mimeType = String(p.mimeType ?? fileData?.mimeType ?? 'image/png');
+      if (mimeType.startsWith('image/') || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(fileUri)) {
+        return { mimeType, data: fileUri };
+      }
+    }
+
+    // 3. Generic mimeType + data/bytes
+    const mimeType = String(p.mimeType ?? '');
+    const data = String(p.data ?? p.bytes ?? '');
+    if (mimeType.startsWith('image/') && data) {
+      return { mimeType, data };
+    }
+  }
+  return null;
 }
 
 export function normalizeState(value: unknown): string {
@@ -271,10 +318,30 @@ export function applyA2AResult(accumulator: StreamAccumulator, raw: unknown): vo
       id,
       value.append ? `${accumulator.artifacts.get(id) ?? ''}${text}` : text,
     );
+
+    const img = extractImageFromParts(artifact.parts);
+    if (img) {
+      if (!accumulator.imageOrder.includes(id)) accumulator.imageOrder.push(id);
+      if (value.append && accumulator.imageArtifacts.has(id)) {
+        const existing = accumulator.imageArtifacts.get(id)!;
+        accumulator.imageArtifacts.set(id, {
+          mimeType: img.mimeType || existing.mimeType,
+          data: existing.data + img.data,
+        });
+      } else {
+        accumulator.imageArtifacts.set(id, img);
+      }
+    }
   }
 
   if (kind === 'message' || (value.role && value.parts)) {
     accumulator.directText = partsText(value.parts) || accumulator.directText;
+    const img = extractImageFromParts(value.parts);
+    if (img) {
+      const id = 'direct-message';
+      if (!accumulator.imageOrder.includes(id)) accumulator.imageOrder.push(id);
+      accumulator.imageArtifacts.set(id, img);
+    }
   }
 
   const status = (value.status ?? {}) as Record<string, unknown>;
@@ -283,6 +350,12 @@ export function applyA2AResult(accumulator: StreamAccumulator, raw: unknown): vo
   const statusMessage = status.message as Record<string, unknown> | undefined;
   if (statusMessage) {
     accumulator.statusText = partsText(statusMessage.parts) || accumulator.statusText;
+    const img = extractImageFromParts(statusMessage.parts);
+    if (img) {
+      const id = 'status-message';
+      if (!accumulator.imageOrder.includes(id)) accumulator.imageOrder.push(id);
+      accumulator.imageArtifacts.set(id, img);
+    }
   }
 
   // A full task object may carry finished artifacts inline.
@@ -291,6 +364,12 @@ export function applyA2AResult(accumulator: StreamAccumulator, raw: unknown): vo
     const id = stringValue(artifact.artifactId) ?? stringValue(artifact.id) ?? crypto.randomUUID();
     if (!accumulator.order.includes(id)) accumulator.order.push(id);
     accumulator.artifacts.set(id, partsText(artifact.parts));
+
+    const img = extractImageFromParts(artifact.parts);
+    if (img) {
+      if (!accumulator.imageOrder.includes(id)) accumulator.imageOrder.push(id);
+      accumulator.imageArtifacts.set(id, img);
+    }
   }
 }
 
@@ -300,6 +379,32 @@ export function snapshotFrom(accumulator: StreamAccumulator): StreamSnapshot {
     .filter(Boolean)
     .join('\n\n');
   const text = artifactText || accumulator.directText || accumulator.statusText;
+
+  let image: ImageArtifact | undefined;
+  const lastImageId = accumulator.imageOrder[accumulator.imageOrder.length - 1];
+  if (lastImageId && accumulator.imageArtifacts.has(lastImageId)) {
+    image = accumulator.imageArtifacts.get(lastImageId);
+  }
+
+  // Fallback: check if text contains base64 image data URL or HTTP image URL if image was not in structured parts
+  if (!image && text) {
+    const dataUrlMatch = text.match(/data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+/i);
+    if (dataUrlMatch) {
+      image = {
+        mimeType: `image/${dataUrlMatch[1].toLowerCase()}`,
+        data: dataUrlMatch[0],
+      };
+    } else {
+      const urlMatch = text.match(/https?:\/\/[^\s"'<>]+\.(?:png|jpg|jpeg|webp)(?:\?[^\s"'<>]*)?/i);
+      if (urlMatch) {
+        image = {
+          mimeType: 'image/png',
+          data: urlMatch[0],
+        };
+      }
+    }
+  }
+
   return {
     taskId: accumulator.taskId,
     contextId: accumulator.contextId,
@@ -309,6 +414,37 @@ export function snapshotFrom(accumulator: StreamAccumulator): StreamSnapshot {
     // sentence twice — once as progress and once as the reply.
     progressText: text === accumulator.statusText ? '' : accumulator.statusText,
     terminal: TERMINAL_STATES.has(accumulator.state),
+    image,
+  };
+}
+
+/** Server-side fetch helper to convert an image URL returned by an agent into a data URL */
+export async function fetchImageAsDataUrl(
+  url: string,
+  token?: string,
+): Promise<{ dataUrl: string; mimeType: string }> {
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers['authorization'] = `Bearer ${token}`;
+  }
+  const response = await fetchTimeout(url, { method: 'GET', headers }, 20_000);
+  if (!response.ok) {
+    throw new A2AError(`Failed to fetch image artifact from URL: HTTP ${response.status}`, true);
+  }
+  const contentType = response.headers.get('content-type') || 'image/png';
+  const mimeType = contentType.split(';')[0].trim();
+  const buffer = await response.arrayBuffer();
+
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+
+  return {
+    dataUrl: `data:${mimeType};base64,${base64}`,
+    mimeType,
   };
 }
 

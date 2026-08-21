@@ -113,10 +113,10 @@ export function App() {
     setPostProcess(DEFAULT_POST_PROCESS);
 
     try {
-      // 1. Compress image payload for Gemini 3.6 Flash AI vision processing
-      const compressedImage = await compressImageForAI(dataUrl, 1024, 0.85);
+      // 1. Compress image payload preserving alpha channel for AI vision processing
+      const compressedImage = await compressImageForAI(dataUrl, 2048, 0.92);
 
-      // 2. Call background removal API powered by Gemini 3.6 Flash / Manyfold Agent
+      // 2. Call background removal API powered by Manyfold Agent / Gemini 3.6 Flash
       const response = await fetch('/api/remove-bg', {
         method: 'POST',
         headers: {
@@ -134,27 +134,44 @@ export function App() {
         throw new Error(`去背處理失敗 (${errDetail})`);
       }
 
-      const data = await response.json();
-      if (!data.svgPath) {
-        throw new Error('去背處理失敗：未能取得 Gemini 3.6 Flash 輪廓數據。');
+      const data = (await response.json()) as {
+        label?: string;
+        image?: string;
+        svgPath?: string;
+      };
+
+      if (!data.image && !data.svgPath) {
+        throw new Error('去背處理失敗：未收到 Agent 去背圖片結果。');
       }
 
-      const extractedSvgPath = data.svgPath;
       const extractedLabel = data.label || '辨識成功';
-
-      setSvgPath(extractedSvgPath);
       setSubjectLabel(extractedLabel);
 
-      // 3. Generate high-precision transparent PNG cutout from Gemini 3.6 Flash SVG path
-      const generatedCutout = await createCutoutFromSvgPath(dataUrl, extractedSvgPath);
-      setCutoutImage(generatedCutout);
+      if (data.image) {
+        // Native image background removal from Agent
+        setCutoutImage(data.image);
+        setSvgPath(null);
 
-      saveToHistory({
-        originalImage: dataUrl,
-        cutoutImage: generatedCutout,
-        svgPath: extractedSvgPath,
-        subjectLabel: extractedLabel,
-      });
+        saveToHistory({
+          originalImage: dataUrl,
+          cutoutImage: data.image,
+          svgPath: null,
+          subjectLabel: extractedLabel,
+        });
+      } else if (data.svgPath) {
+        // Legacy SVG path fallback
+        const extractedSvgPath = data.svgPath;
+        setSvgPath(extractedSvgPath);
+        const generatedCutout = await createCutoutFromSvgPath(dataUrl, extractedSvgPath);
+        setCutoutImage(generatedCutout);
+
+        saveToHistory({
+          originalImage: dataUrl,
+          cutoutImage: generatedCutout,
+          svgPath: extractedSvgPath,
+          subjectLabel: extractedLabel,
+        });
+      }
 
       showToast(`✦ AI 去背與主體辨識完成 (${extractedLabel})`, 'success');
     } catch (err: unknown) {
@@ -186,7 +203,7 @@ export function App() {
   const handleRestoreHistoryItem = (item: HistoryItem) => {
     setOriginalImage(item.originalImage);
     setCutoutImage(item.cutoutImage);
-    setSvgPath(item.svgPath);
+    setSvgPath(item.svgPath ?? null);
     setSubjectLabel(item.subjectLabel);
     setPostProcess(DEFAULT_POST_PROCESS);
     showToast(`已載入歷史項目：${item.subjectLabel || '去背圖片'}`, 'info');

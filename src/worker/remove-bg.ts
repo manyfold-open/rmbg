@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { HttpError, type Env } from './types';
 import { listConnectedAgents, credentialFor } from './connect';
-import { consumeA2AStream } from './a2a';
+import { consumeA2AStream, fetchImageAsDataUrl } from './a2a';
 
 export interface RemoveBgRequest {
   /** Base64 string or data URL */
@@ -12,11 +12,13 @@ export interface RemoveBgRequest {
 
 export interface RemoveBgResponse {
   label: string;
-  svgPath: string;
-  boundingBox: [number, number, number, number];
+  image?: string;
+  mimeType?: string;
+  svgPath?: string;
+  boundingBox?: [number, number, number, number];
 }
 
-function parseRemoveBgJson(text: string): RemoveBgResponse {
+function parseRemoveBgJson(text: string): { label?: string; svgPath?: string; boundingBox?: [number, number, number, number] } {
   let cleaned = text.trim();
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -26,10 +28,10 @@ function parseRemoveBgJson(text: string): RemoveBgResponse {
     cleaned = jsonMatch[0];
   }
   try {
-    return JSON.parse(cleaned) as RemoveBgResponse;
+    return JSON.parse(cleaned);
   } catch {
     const sanitized = cleaned.replace(/[\u0000-\u001F\u007F-\u009F]/g, '');
-    return JSON.parse(sanitized) as RemoveBgResponse;
+    return JSON.parse(sanitized);
   }
 }
 
@@ -88,35 +90,56 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
                 },
                 {
                   kind: 'text',
-                  text: `You are Gemini 3.6 Flash with advanced high-resolution vision capabilities.
-Analyze all main foreground subjects in the attached image and extract their ultra-precise boundary contour for background removal.
-Utilize fine-grained bezier curve control points to tightly wrap around complex subject shapes and edges.
-Return JSON ONLY with exact format:
-{
-  "label": "description of all main foreground subjects",
-  "svgPath": "smooth closed SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000). Must start with 'M', use bezier curves (C, S, Q) or fine-grained coordinates to outline the subject tightly, and close subpaths with 'Z'.",
-  "boundingBox": [ymin, xmin, ymax, xmax]
-}`,
+                  text: `Remove the background from the provided image.
+
+Return the edited result as a transparent PNG image artifact.
+
+Preserve the original subject's pixels, colors, texture, hair, fur, edges, and proportions.
+Do not redraw, regenerate, restyle, crop, or add anything.
+Only remove the background.
+Do not return SVG, JSON, a polygon, or a textual explanation.`,
                 },
               ],
             },
-            configuration: { acceptedOutputModes: ['text/plain', 'application/json'] },
+            configuration: {
+              acceptedOutputModes: [
+                'image/png',
+                'image/jpeg',
+                'image/webp',
+                'text/plain',
+                'application/json',
+              ],
+            },
           },
           signal: controller.signal,
         });
 
-        const text = snapshot.text || '';
-        const result = parseRemoveBgJson(text);
+        if (snapshot.image) {
+          let cutoutDataUrl: string;
+          let finalMime = snapshot.image.mimeType || 'image/png';
 
-        if (!result.svgPath) {
-          throw new Error(`Agent "${selectedAgent.name}" returned response without a valid svgPath.`);
+          if (/^https?:\/\//i.test(snapshot.image.data)) {
+            const fetched = await fetchImageAsDataUrl(snapshot.image.data, cred.token);
+            cutoutDataUrl = fetched.dataUrl;
+            finalMime = fetched.mimeType || finalMime;
+          } else if (snapshot.image.data.startsWith('data:')) {
+            cutoutDataUrl = snapshot.image.data;
+          } else {
+            cutoutDataUrl = `data:${finalMime};base64,${snapshot.image.data}`;
+          }
+
+          return {
+            label: selectedAgent.name,
+            image: cutoutDataUrl,
+            mimeType: finalMime,
+          };
         }
 
-        return {
-          label: result.label || selectedAgent.name,
-          svgPath: result.svgPath,
-          boundingBox: result.boundingBox || [0, 0, 1000, 1000],
-        };
+        throw new HttpError(
+          500,
+          'agent_no_image',
+          `Manyfold Agent ("${selectedAgent.name}") 未回傳圖片結果: Agent 回傳了文字敘述而未提供圖片 artifact (${snapshot.text || '無回應文字'})`
+        );
       } finally {
         clearTimeout(timer);
       }
@@ -127,11 +150,11 @@ Return JSON ONLY with exact format:
       if (!apiKey) {
         throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
       }
-      console.warn('Falling back to direct Gemini API key after A2A failure.');
+      console.warn('Falling back to direct Gemini API key legacy path after A2A failure.');
     }
   }
 
-  // 2. Direct Gemini API Key fallback method if configured
+  // 2. Direct Gemini API Key legacy fallback method if configured
   if (apiKey) {
     const baseUrl = env.MANYFOLD_API_BASE_URL && (typeof process !== 'undefined' ? process.env?.GOOGLE_GEMINI_BASE_URL : undefined);
 

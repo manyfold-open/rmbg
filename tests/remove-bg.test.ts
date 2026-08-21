@@ -1,7 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { handleRemoveBg } from '../src/worker/remove-bg';
 import type { Env } from '../src/worker/types';
 import app from '../src/worker/index';
+import * as connectModule from '../src/worker/connect';
+import * as a2aModule from '../src/worker/a2a';
 
 const mockDb = {
   prepare: () => ({
@@ -50,9 +52,74 @@ describe('remove-bg handler', () => {
     expect(data.error.code).toBe('bad_request');
   });
 
-  it('validates SVG path requirement structure in response', async () => {
-    const validSvgPath = 'M 100 100 L 900 100 L 900 900 L 100 900 Z';
-    expect(validSvgPath).toMatch(/^M\s/);
-    expect(validSvgPath).toMatch(/Z$/);
+  it('returns image artifact directly when connected Manyfold agent returns an image', async () => {
+    vi.spyOn(connectModule, 'listConnectedAgents').mockResolvedValueOnce([
+      {
+        agentId: 'agent-1',
+        name: 'Test Agent',
+        description: 'Test',
+        rpcUrl: 'https://api.manyfold.ai/rpc',
+        expiresAt: null,
+        verified: true,
+        warning: null,
+        connectedAt: '2026-08-21T00:00:00Z',
+      },
+    ]);
+    vi.spyOn(connectModule, 'credentialFor').mockResolvedValueOnce({
+      rpcUrl: 'https://api.manyfold.ai/rpc',
+      token: 'test-token',
+      label: 'Test Agent',
+    });
+    vi.spyOn(a2aModule, 'consumeA2AStream').mockResolvedValueOnce({
+      taskId: 't1',
+      contextId: 'c1',
+      state: 'completed',
+      text: 'Here is your background removal',
+      progressText: '',
+      terminal: true,
+      image: {
+        mimeType: 'image/png',
+        data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+      },
+    });
+
+    const mockEnv = { DB: mockDb } as Env;
+    const res = await handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' });
+    expect(res.image).toBeDefined();
+    expect(res.image).toContain('data:image/png;base64,iVBORw0KGgo');
+    expect(res.label).toBe('Test Agent');
+  });
+
+  it('throws diagnostic error when connected agent returns text without an image artifact', async () => {
+    vi.spyOn(connectModule, 'listConnectedAgents').mockResolvedValueOnce([
+      {
+        agentId: 'agent-1',
+        name: 'Test Agent',
+        description: 'Test',
+        rpcUrl: 'https://api.manyfold.ai/rpc',
+        expiresAt: null,
+        verified: true,
+        warning: null,
+        connectedAt: '2026-08-21T00:00:00Z',
+      },
+    ]);
+    vi.spyOn(connectModule, 'credentialFor').mockResolvedValueOnce({
+      rpcUrl: 'https://api.manyfold.ai/rpc',
+      token: 'test-token',
+      label: 'Test Agent',
+    });
+    vi.spyOn(a2aModule, 'consumeA2AStream').mockResolvedValueOnce({
+      taskId: 't1',
+      contextId: 'c1',
+      state: 'completed',
+      text: 'Sorry, I cannot process this image.',
+      progressText: '',
+      terminal: true,
+    });
+
+    const mockEnv = { DB: mockDb } as Env;
+    await expect(handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' })).rejects.toThrow(
+      'Manyfold Agent ("Test Agent") 未回傳圖片結果'
+    );
   });
 });

@@ -1,7 +1,65 @@
 import { describe, expect, it } from 'vitest';
-import { A2AError, foldA2AResults, safeErrorText, validateA2AUrl } from '../src/worker/a2a';
+import { A2AError, extractImageFromParts, foldA2AResults, safeErrorText, validateA2AUrl } from '../src/worker/a2a';
+
+describe('extractImageFromParts', () => {
+  it('extracts inline-data image parts', () => {
+    const img = extractImageFromParts([
+      { kind: 'text', text: 'processing' },
+      { kind: 'inline-data', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' },
+    ]);
+    expect(img).not.toBeNull();
+    expect(img?.mimeType).toBe('image/png');
+    expect(img?.data).toContain('iVBORw0KGgoAAAANSUhEUgAAAAE');
+  });
+
+  it('extracts file-data image parts', () => {
+    const img = extractImageFromParts([
+      { kind: 'file-data', mimeType: 'image/png', fileUri: 'https://example.com/cutout.png' },
+    ]);
+    expect(img).not.toBeNull();
+    expect(img?.data).toBe('https://example.com/cutout.png');
+  });
+});
 
 describe('foldA2AResults (stream accumulator)', () => {
+  it('accumulates image artifact chunks with append: true', () => {
+    const snapshot = foldA2AResults([
+      {
+        kind: 'artifact-update',
+        artifact: {
+          artifactId: 'img1',
+          parts: [{ kind: 'inline-data', mimeType: 'image/png', data: 'chunk1_' }],
+        },
+      },
+      {
+        kind: 'artifact-update',
+        append: true,
+        artifact: {
+          artifactId: 'img1',
+          parts: [{ kind: 'inline-data', mimeType: 'image/png', data: 'chunk2' }],
+        },
+      },
+      { kind: 'status-update', status: { state: 'completed' } },
+    ]);
+    expect(snapshot.image).toBeDefined();
+    expect(snapshot.image?.mimeType).toBe('image/png');
+    expect(snapshot.image?.data).toBe('chunk1_chunk2');
+    expect(snapshot.terminal).toBe(true);
+  });
+
+  it('extracts base64 image data URL embedded in text fallback', () => {
+    const snapshot = foldA2AResults([
+      {
+        kind: 'message',
+        role: 'agent',
+        parts: [{ kind: 'text', text: 'Here is your transparent PNG: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' }],
+      },
+    ]);
+    expect(snapshot.image).toBeDefined();
+    expect(snapshot.image?.mimeType).toBe('image/png');
+    expect(snapshot.image?.data).toContain('data:image/png;base64,iVBORw');
+  });
+
   it('accumulates artifact appends and reaches a terminal state', () => {
     const snapshot = foldA2AResults([
       { kind: 'status-update', taskId: 't1', contextId: 'c1', status: { state: 'working' } },

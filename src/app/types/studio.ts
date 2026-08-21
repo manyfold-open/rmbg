@@ -41,7 +41,7 @@ export interface HistoryItem {
   id: string;
   originalImage: string;
   cutoutImage: string | null;
-  svgPath: string | null;
+  svgPath?: string | null;
   subjectLabel: string | null;
   timestamp: number;
 }

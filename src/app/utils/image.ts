@@ -1,13 +1,16 @@
 /**
- * Compress and scale down an image data URL for AI vision processing.
- * Limits max dimension (e.g. 1024px) keeping aspect ratio, and exports JPEG.
- * Reduces multi-megabyte payloads down to ~100KB-300KB, preventing HTTP 413 payload limits.
+ * Compress and scale down an image data URL for AI vision processing if necessary.
+ * Preserves transparency/alpha channel for PNG and WebP images, and allows up to 2048px dimensions.
  */
-export async function compressImageForAI(dataUrl: string, maxDim = 1024, quality = 0.85): Promise<string> {
-  // If it's small enough or SVG, return directly
-  if (dataUrl.length < 300 * 1024 || dataUrl.startsWith('data:image/svg+xml')) {
+export async function compressImageForAI(dataUrl: string, maxDim = 2048, quality = 0.92): Promise<string> {
+  // If it's reasonably small (< 1.5MB) or SVG, return directly
+  if (dataUrl.length < 1500 * 1024 || dataUrl.startsWith('data:image/svg+xml')) {
     return dataUrl;
   }
+
+  const isPng = dataUrl.startsWith('data:image/png');
+  const isWebp = dataUrl.startsWith('data:image/webp');
+  const preserveAlpha = isPng || isWebp;
 
   return new Promise((resolve) => {
     const img = new Image();
@@ -19,11 +22,11 @@ export async function compressImageForAI(dataUrl: string, maxDim = 1024, quality
         height = img.height || 800;
       }
 
-      if (width <= maxDim && height <= maxDim && dataUrl.length < 500 * 1024) {
+      if (width <= maxDim && height <= maxDim && dataUrl.length < 2500 * 1024) {
         return resolve(dataUrl);
       }
 
-      // Compute scaled dimensions preserving ratio
+      // Compute scaled dimensions preserving aspect ratio
       if (width > height) {
         if (width > maxDim) {
           height = Math.round((height * maxDim) / width);
@@ -43,7 +46,11 @@ export async function compressImageForAI(dataUrl: string, maxDim = 1024, quality
       if (!ctx) return resolve(dataUrl);
 
       ctx.drawImage(img, 0, 0, width, height);
-      resolve(canvas.toDataURL('image/jpeg', quality));
+      if (preserveAlpha) {
+        resolve(canvas.toDataURL('image/png'));
+      } else {
+        resolve(canvas.toDataURL('image/jpeg', quality));
+      }
     };
 
     img.onerror = () => resolve(dataUrl);
