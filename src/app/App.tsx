@@ -1,13 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Sparkles, AlertCircle, RefreshCw, Layers, Link as LinkIcon, X, Keyboard } from 'lucide-react';
+import { Sparkles, AlertCircle, RefreshCw, Layers, Keyboard } from 'lucide-react';
 import { UploadZone } from './components/UploadZone';
 import { ComparisonSlider } from './components/ComparisonSlider';
 import { BackgroundCustomizer } from './components/BackgroundCustomizer';
 import { ExportToolbar } from './components/ExportToolbar';
 import { HistoryDrawer } from './components/HistoryDrawer';
 import { ToastContainer } from './components/Toast';
-import ConnectPanel from './components/ConnectPanel';
-import AgentPicker from './components/AgentPicker';
 import type { ConnectedAgent } from '../shared/types';
 import type { BgConfig, PostProcessConfig, HistoryItem, ToastMessage } from './types/studio';
 import { DEFAULT_POST_PROCESS } from './types/studio';
@@ -25,10 +23,23 @@ export function App() {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Manyfold Agents state
-  const [agents, setAgents] = useState<ConnectedAgent[]>([]);
+  // Background Manyfold Agents state for A2A delegation
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [showConnectModal, setShowConnectModal] = useState<boolean>(false);
+
+  const fetchAgents = async () => {
+    try {
+      const res = await api<{ agents: ConnectedAgent[] }>('/api/agents');
+      if (res.agents && res.agents.length > 0 && !selectedAgentId) {
+        setSelectedAgentId(res.agents[0].agentId);
+      }
+    } catch {
+      // Ignore initial agent fetch error if unauthenticated/unsupported
+    }
+  };
+
+  useEffect(() => {
+    void fetchAgents();
+  }, []);
 
   // Studio customizer state
   const [bgConfig, setBgConfig] = useState<BgConfig>({
@@ -91,22 +102,6 @@ export function App() {
     } catch {}
     showToast('歷史紀錄已全部清除', 'info');
   };
-
-  const fetchAgents = async () => {
-    try {
-      const res = await api<{ agents: ConnectedAgent[] }>('/api/agents');
-      setAgents(res.agents || []);
-      if (res.agents && res.agents.length > 0 && !selectedAgentId) {
-        setSelectedAgentId(res.agents[0].agentId);
-      }
-    } catch {
-      // Ignore initial agent fetch error if unauthenticated/unsupported
-    }
-  };
-
-  useEffect(() => {
-    void fetchAgents();
-  }, []);
 
   const handleImageSelected = async (dataUrl: string) => {
     setOriginalImage(dataUrl);
@@ -262,65 +257,7 @@ export function App() {
             </h1>
           </div>
         </div>
-
-        {/* Manyfold Connect Button & Agent Picker */}
-        <div className="header-actions">
-          {agents.length > 0 ? (
-            <div className="agent-selector-row">
-              <span className="small muted">Agent:</span>
-              <AgentPicker
-                agents={agents}
-                selectedId={selectedAgentId}
-                onSelect={(id) => setSelectedAgentId(id)}
-              />
-              <button
-                type="button"
-                className="button subtle"
-                onClick={() => setShowConnectModal(true)}
-              >
-                <LinkIcon size={14} /> 管理
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              className="button subtle"
-              onClick={() => setShowConnectModal(true)}
-            >
-              <LinkIcon size={16} />
-              Connect Manyfold Agent
-            </button>
-          )}
-        </div>
       </header>
-
-      {/* Connect Modal */}
-      {showConnectModal && (
-        <div className="modal-backdrop">
-          <div className="modal-content">
-            <div className="modal-header">
-              <h3>Connect Manyfold Agent</h3>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => setShowConnectModal(false)}
-              >
-                <X size={18} />
-              </button>
-            </div>
-            <p className="small muted">
-              直接登入授權您的 Manyfold AI Agent，無需自行設定 GEMINI_API_KEY 即可使用去背服務。
-            </p>
-            <ConnectPanel
-              initialSession={null}
-              onConnected={async () => {
-                await fetchAgents();
-                setShowConnectModal(false);
-              }}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Main Workspace Area */}
       <main className="app-main">

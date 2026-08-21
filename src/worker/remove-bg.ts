@@ -69,11 +69,13 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
                 },
                 {
                   kind: 'text',
-                  text: `Analyze all main foreground subjects in the attached image and extract their precise boundary contour for background removal.
+                  text: `You are Gemini 3.6 Flash with advanced high-resolution vision capabilities.
+Analyze all main foreground subjects in the attached image and extract their ultra-precise boundary contour for background removal.
+Utilize fine-grained bezier curve control points to tightly wrap around complex subject shapes and edges.
 Return JSON ONLY with exact format:
 {
   "label": "description of all main foreground subjects",
-  "svgPath": "smooth closed SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000). Must start with 'M', use bezier curves or fine-grained points to outline the subject tightly, and close subpaths with 'Z'.",
+  "svgPath": "smooth closed SVG path 'd' string in 0..1000 viewBox (0 0 1000 1000). Must start with 'M', use bezier curves (C, S, Q) or fine-grained coordinates to outline the subject tightly, and close subpaths with 'Z'.",
   "boundingBox": [ymin, xmin, ymax, xmax]
 }`,
                 },
@@ -122,7 +124,7 @@ Return JSON ONLY with exact format:
 
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.6-flash',
         contents: [
           {
             inlineData: {
@@ -130,9 +132,9 @@ Return JSON ONLY with exact format:
               data: base64Data,
             },
           },
-          `You are an expert computer vision model specializing in image segmentation and background removal.
+          `You are Gemini 3.6 Flash, an expert computer vision model specializing in image segmentation and background removal.
 Analyze all main foreground subjects in this image (e.g. people, pets, products, objects, items).
-Extract the precise boundary contour outlining all main foreground subjects, excluding only background elements.
+Extract the precise boundary contour outlining all main foreground subjects with ultra-high resolution edge accuracy, excluding background elements.
 Return a JSON object with the following schema:
 {
   "label": "short description of all main foreground subjects",
