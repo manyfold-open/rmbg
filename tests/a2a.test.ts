@@ -19,6 +19,15 @@ describe('extractImageFromParts', () => {
     expect(img).not.toBeNull();
     expect(img?.data).toBe('https://example.com/cutout.png');
   });
+
+  it('extracts standard A2A raw image parts', () => {
+    const img = extractImageFromParts([
+      { raw: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB', mediaType: 'image/png' },
+    ]);
+    expect(img).not.toBeNull();
+    expect(img?.mimeType).toBe('image/png');
+    expect(img?.data).toContain('iVBORw0KGgo');
+  });
 });
 
 describe('foldA2AResults (stream accumulator)', () => {
@@ -72,6 +81,27 @@ describe('foldA2AResults (stream accumulator)', () => {
     expect(snapshot.contextId).toBe('c1');
     expect(snapshot.state).toBe('completed');
     expect(snapshot.terminal).toBe(true);
+  });
+
+  it('treats a final artifact marker as terminal even without a state', () => {
+    const snapshot = foldA2AResults([
+      {
+        kind: 'artifact-update',
+        final: true,
+        artifact: {
+          artifactId: 'img1',
+          parts: [{ kind: 'inline-data', mimeType: 'image/png', data: 'final-image' }],
+        },
+      },
+    ]);
+    expect(snapshot.image?.data).toBe('final-image');
+    expect(snapshot.final).toBe(true);
+    expect(snapshot.terminal).toBe(true);
+  });
+
+  it('normalizes done and success states to completed', () => {
+    expect(foldA2AResults([{ status: { state: 'done' } }]).state).toBe('completed');
+    expect(foldA2AResults([{ status: { state: 'success' } }]).state).toBe('completed');
   });
 
   it('replaces an artifact when append is not set', () => {

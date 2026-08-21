@@ -198,8 +198,24 @@ export interface StreamSnapshot {
   /** Progress text from status.message, when it differs from the reply itself. */
   progressText: string;
   terminal: boolean;
+  /** Whether this event explicitly marked the stream/artifact as final. */
+  final: boolean;
+  /** Safe diagnostics for timeout/error reporting; never contains payload data. */
+  diagnostics: StreamDiagnostics;
   /** Extracted image artifact, if returned by the agent. */
   image?: ImageArtifact;
+}
+
+export interface StreamDiagnostics {
+  events: number;
+  lastKind: string;
+  state: string;
+  taskId: string | null;
+  contextId: string | null;
+  imageMimeType: string | null;
+  imageLength: number;
+  imageArtifact: boolean;
+  final: boolean;
 }
 
 interface StreamAccumulator {
@@ -212,6 +228,9 @@ interface StreamAccumulator {
   statusText: string;
   imageArtifacts: Map<string, ImageArtifact>;
   imageOrder: string[];
+  events: number;
+  lastKind: string;
+  final: boolean;
 }
 
 export function createAccumulator(): StreamAccumulator {
@@ -225,6 +244,9 @@ export function createAccumulator(): StreamAccumulator {
     statusText: '',
     imageArtifacts: new Map(),
     imageOrder: [],
+    events: 0,
+    lastKind: '',
+    final: false,
   };
 }
 
@@ -253,25 +275,37 @@ export function extractImageFromParts(parts: unknown): ImageArtifact | null {
     // 1. inlineData or kind === 'inline-data' / 'inlineData' / 'image'
     const inline = (p.inlineData ?? (p.kind === 'inline-data' || p.kind === 'inlineData' || p.kind === 'image' ? p : null)) as Record<string, unknown> | null;
     if (inline) {
-      const mimeType = String(inline.mimeType ?? p.mimeType ?? 'image/png');
+      const mimeType = String(inline.mimeType ?? inline.mediaType ?? p.mimeType ?? p.mediaType ?? 'image/png');
       const data = String(inline.data ?? inline.bytes ?? p.data ?? p.bytes ?? '');
       if (data && (mimeType.startsWith('image/') || mimeType === 'application/octet-stream')) {
         return { mimeType: mimeType === 'application/octet-stream' ? 'image/png' : mimeType, data };
       }
     }
 
+    // A2A FilePart form: { raw: <base64>, mediaType: "image/png" }.
+    const raw = p.raw;
+    if (typeof raw === 'string') {
+      const mimeType = String(p.mediaType ?? p.mimeType ?? 'image/png');
+      if (mimeType.startsWith('image/')) return { mimeType, data: raw };
+    } else if (raw && typeof raw === 'object') {
+      const rawPart = raw as Record<string, unknown>;
+      const mimeType = String(rawPart.mediaType ?? rawPart.mimeType ?? p.mediaType ?? p.mimeType ?? 'image/png');
+      const data = String(rawPart.bytes ?? rawPart.data ?? '');
+      if (data && mimeType.startsWith('image/')) return { mimeType, data };
+    }
+
     // 2. fileUri / url / uri / fileData
     const fileData = (p.fileData ?? null) as Record<string, unknown> | null;
     const fileUri = String(p.fileUri ?? p.url ?? p.uri ?? fileData?.fileUri ?? fileData?.url ?? fileData?.uri ?? '');
     if (fileUri) {
-      const mimeType = String(p.mimeType ?? fileData?.mimeType ?? 'image/png');
+      const mimeType = String(p.mimeType ?? p.mediaType ?? fileData?.mimeType ?? fileData?.mediaType ?? 'image/png');
       if (mimeType.startsWith('image/') || /\.(png|jpe?g|webp|gif)(\?.*)?$/i.test(fileUri)) {
         return { mimeType, data: fileUri };
       }
     }
 
     // 3. Generic mimeType + data/bytes
-    const mimeType = String(p.mimeType ?? '');
+    const mimeType = String(p.mimeType ?? p.mediaType ?? '');
     const data = String(p.data ?? p.bytes ?? '');
     if (mimeType.startsWith('image/') && data) {
       return { mimeType, data };
@@ -280,11 +314,57 @@ export function extractImageFromParts(parts: unknown): ImageArtifact | null {
   return null;
 }
 
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function isFinalMarker(value: unknown): boolean {
+  const record = objectValue(value);
+  if (!record) return false;
+  if (record.final === true || record.done === true || record.isFinal === true || record.lastChunk === true) {
+    return true;
+  }
+  const status = objectValue(record.status);
+  if (status && (status.final === true || status.done === true || status.isFinal === true)) return true;
+  const artifact = objectValue(record.artifact);
+  if (artifact && (artifact.final === true || artifact.done === true || artifact.lastChunk === true)) return true;
+  return false;
+}
+
+function diagnosticsFrom(accumulator: StreamAccumulator): StreamDiagnostics {
+  const lastImageId = accumulator.imageOrder[accumulator.imageOrder.length - 1];
+  const image = lastImageId ? accumulator.imageArtifacts.get(lastImageId) : undefined;
+  return {
+    events: accumulator.events,
+    lastKind: accumulator.lastKind,
+    state: accumulator.state,
+    taskId: accumulator.taskId,
+    contextId: accumulator.contextId,
+    imageMimeType: image?.mimeType ?? null,
+    imageLength: image?.data.length ?? 0,
+    imageArtifact: Boolean(image),
+    final: accumulator.final,
+  };
+}
+
+function diagnosticsText(diagnostics: StreamDiagnostics): string {
+  return `events=${diagnostics.events}, lastKind=${diagnostics.lastKind || 'unknown'}, state=${diagnostics.state || 'unknown'}, taskId=${diagnostics.taskId || 'none'}, image=${diagnostics.imageArtifact ? `${diagnostics.imageMimeType || 'unknown'}:${diagnostics.imageLength}` : 'none'}, final=${diagnostics.final}`;
+}
+
 export function normalizeState(value: unknown): string {
   const raw = String(value ?? '')
     .toLowerCase()
     .replace(/^task_state_/, '')
     .replace(/_/g, '-');
+  const aliases: Record<string, string> = {
+    done: 'completed',
+    complete: 'completed',
+    finished: 'completed',
+    success: 'completed',
+    succeeded: 'completed',
+    error: 'failed',
+  };
+  const normalized = aliases[raw] ?? raw;
   return [
     'submitted',
     'working',
@@ -294,16 +374,28 @@ export function normalizeState(value: unknown): string {
     'rejected',
     'input-required',
     'auth-required',
-  ].includes(raw)
-    ? raw
+  ].includes(normalized)
+    ? normalized
     : '';
 }
 
 /** Folds one JSON-RPC `result` (task, message, status-update or artifact-update) in. */
 export function applyA2AResult(accumulator: StreamAccumulator, raw: unknown): void {
   if (!raw || typeof raw !== 'object') return;
+  accumulator.events += 1;
   const value = raw as Record<string, unknown>;
   const kind = String(value.kind ?? '').toLowerCase();
+  accumulator.lastKind = kind || (value.task ? 'task' : 'unknown');
+  if (isFinalMarker(value)) accumulator.final = true;
+
+  // Some A2A implementations wrap the task inside { task: ... }.
+  const wrappedTask = objectValue(value.task);
+  if (wrappedTask) {
+    applyA2AResult(accumulator, wrappedTask);
+    if (isFinalMarker(value)) accumulator.final = true;
+    return;
+  }
+
   const taskId = stringValue(value.taskId) ?? stringValue(value.id);
   const contextId = stringValue(value.contextId);
   if (taskId) accumulator.taskId = taskId;
@@ -332,6 +424,7 @@ export function applyA2AResult(accumulator: StreamAccumulator, raw: unknown): vo
         accumulator.imageArtifacts.set(id, img);
       }
     }
+    if (isFinalMarker(value) || isFinalMarker(artifact)) accumulator.final = true;
   }
 
   if (kind === 'message' || (value.role && value.parts)) {
@@ -342,6 +435,7 @@ export function applyA2AResult(accumulator: StreamAccumulator, raw: unknown): vo
       if (!accumulator.imageOrder.includes(id)) accumulator.imageOrder.push(id);
       accumulator.imageArtifacts.set(id, img);
     }
+    if (isFinalMarker(value)) accumulator.final = true;
   }
 
   const status = (value.status ?? {}) as Record<string, unknown>;
@@ -370,6 +464,7 @@ export function applyA2AResult(accumulator: StreamAccumulator, raw: unknown): vo
       if (!accumulator.imageOrder.includes(id)) accumulator.imageOrder.push(id);
       accumulator.imageArtifacts.set(id, img);
     }
+    if (isFinalMarker(artifact)) accumulator.final = true;
   }
 }
 
@@ -413,7 +508,9 @@ export function snapshotFrom(accumulator: StreamAccumulator): StreamSnapshot {
     // Suppressed when it is itself the answer, so the UI never shows the same
     // sentence twice — once as progress and once as the reply.
     progressText: text === accumulator.statusText ? '' : accumulator.statusText,
-    terminal: TERMINAL_STATES.has(accumulator.state),
+    terminal: TERMINAL_STATES.has(accumulator.state) || accumulator.final,
+    final: accumulator.final,
+    diagnostics: diagnosticsFrom(accumulator),
     image,
   };
 }
@@ -483,7 +580,7 @@ export async function consumeA2AStream(options: {
     });
   } catch (error) {
     if ((error as Error)?.name === 'AbortError') {
-      throw new A2AError(`${cred.label} stream timed out.`, true);
+      throw new A2AError(`${cred.label} stream timed out before receiving a response.`, true);
     }
     throw new A2AError(safeErrorText(error instanceof Error ? error.message : error), true);
   }
@@ -505,7 +602,8 @@ export async function consumeA2AStream(options: {
         chunk = await reader.read();
       } catch (error) {
         if ((error as Error)?.name === 'AbortError') {
-          throw new A2AError(`${cred.label} stream timed out.`, true);
+          const diagnostics = diagnosticsFrom(accumulator);
+          throw new A2AError(`${cred.label} stream timed out (${diagnosticsText(diagnostics)}).`, true);
         }
         throw error;
       }

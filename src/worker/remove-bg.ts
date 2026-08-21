@@ -18,6 +18,8 @@ export interface RemoveBgResponse {
   boundingBox?: [number, number, number, number];
 }
 
+const REMOVE_BG_TIMEOUT_MS = 180_000;
+
 function parseRemoveBgJson(text: string): { label?: string; svgPath?: string; boundingBox?: [number, number, number, number] } {
   let cleaned = text.trim();
   if (cleaned.startsWith('```')) {
@@ -70,7 +72,10 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
       const cred = await credentialFor(env, selectedAgent.agentId);
 
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 60_000);
+      // Native image generation can take longer than a text-only A2A turn.
+      // The stream parser still requires a final/completed event; this is only
+      // a safety ceiling for an agent that never completes.
+      const timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
 
       const messageId = `rmbg-${crypto.randomUUID()}`;
 
