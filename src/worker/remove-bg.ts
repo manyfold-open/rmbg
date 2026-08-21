@@ -2,6 +2,8 @@ import { GoogleGenAI } from '@google/genai';
 import { HttpError, type Env } from './types';
 import { listConnectedAgents, credentialFor } from './connect';
 import { consumeA2AStream, fetchImageAsDataUrl } from './a2a';
+import { loadAppSettings } from './settings-manager';
+import { saveImageToR2 } from './r2';
 
 export interface RemoveBgRequest {
   /** Base64 string or data URL */
@@ -16,6 +18,8 @@ export interface RemoveBgResponse {
   mimeType?: string;
   svgPath?: string;
   boundingBox?: [number, number, number, number];
+  r2Key?: string;
+  r2Url?: string;
 }
 
 const REMOVE_BG_TIMEOUT_MS = 180_000;
@@ -42,6 +46,8 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
     throw new HttpError(400, 'missing_image', 'Image data is required.');
   }
 
+  const settings = await loadAppSettings(env);
+
   // Parse mime type and clean base64 data
   let mimeType = 'image/jpeg';
   let base64Data = body.image;
@@ -61,41 +67,39 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
 
   const apiKey = env.GEMINI_API_KEY || (typeof process !== 'undefined' ? process.env?.GEMINI_API_KEY : '');
 
-  // 1. Prioritize Manyfold Agent A2A method if a Manyfold Agent is connected
-  const connectedAgents = await listConnectedAgents(env).catch(() => []);
-  if (connectedAgents && connectedAgents.length > 0) {
-    const selectedAgent = body.agentId
-      ? connectedAgents.find((a) => a.agentId === body.agentId) || connectedAgents[0]
-      : connectedAgents[0];
-
-    try {
-      const cred = await credentialFor(env, selectedAgent.agentId);
-
-      const controller = new AbortController();
-      // Native image generation can take longer than a text-only A2A turn.
-      // The stream parser still requires a final/completed event; this is only
-      // a safety ceiling for an agent that never completes.
-      const timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
-
-      const messageId = `rmbg-${crypto.randomUUID()}`;
+  // 1. Prioritize Manyfold Agent A2A method if configured/allowed & connected
+  if (settings.bgRemoveMode !== 'gemini_only') {
+    const connectedAgents = await listConnectedAgents(env).catch(() => []);
+    if (connectedAgents && connectedAgents.length > 0) {
+      const selectedAgent = body.agentId
+        ? connectedAgents.find((a) => a.agentId === body.agentId) || connectedAgents[0]
+        : connectedAgents[0];
 
       try {
-        const snapshot = await consumeA2AStream({
-          cred,
-          params: {
-            message: {
-              kind: 'message',
-              role: 'user',
-              messageId,
-              parts: [
-                {
-                  kind: 'inline-data',
-                  mimeType,
-                  data: base64Data,
-                },
-                {
-                  kind: 'text',
-                  text: `Remove the background from the provided image.
+        const cred = await credentialFor(env, selectedAgent.agentId);
+
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
+
+        const messageId = `rmbg-${crypto.randomUUID()}`;
+
+        try {
+          const snapshot = await consumeA2AStream({
+            cred,
+            params: {
+              message: {
+                kind: 'message',
+                role: 'user',
+                messageId,
+                parts: [
+                  {
+                    kind: 'inline-data',
+                    mimeType,
+                    data: base64Data,
+                  },
+                  {
+                    kind: 'text',
+                    text: `Remove the background from the provided image.
 
 Return the edited result as a transparent PNG image artifact.
 
@@ -103,59 +107,67 @@ Preserve the original subject's pixels, colors, texture, hair, fur, edges, and p
 Do not redraw, regenerate, restyle, crop, or add anything.
 Only remove the background.
 Do not return SVG, JSON, a polygon, or a textual explanation.`,
-                },
-              ],
+                  },
+                ],
+              },
+              configuration: {
+                acceptedOutputModes: [
+                  'image/png',
+                  'image/jpeg',
+                  'image/webp',
+                  'text/plain',
+                  'application/json',
+                ],
+              },
             },
-            configuration: {
-              acceptedOutputModes: [
-                'image/png',
-                'image/jpeg',
-                'image/webp',
-                'text/plain',
-                'application/json',
-              ],
-            },
-          },
-          signal: controller.signal,
-        });
+            signal: controller.signal,
+          });
 
-        if (snapshot.image) {
-          let cutoutDataUrl: string;
-          let finalMime = snapshot.image.mimeType || 'image/png';
+          if (snapshot.image) {
+            let cutoutDataUrl: string;
+            let finalMime = snapshot.image.mimeType || 'image/png';
 
-          if (/^https?:\/\//i.test(snapshot.image.data)) {
-            const fetched = await fetchImageAsDataUrl(snapshot.image.data, cred.token);
-            cutoutDataUrl = fetched.dataUrl;
-            finalMime = fetched.mimeType || finalMime;
-          } else if (snapshot.image.data.startsWith('data:')) {
-            cutoutDataUrl = snapshot.image.data;
-          } else {
-            cutoutDataUrl = `data:${finalMime};base64,${snapshot.image.data}`;
+            if (/^https?:\/\//i.test(snapshot.image.data)) {
+              const fetched = await fetchImageAsDataUrl(snapshot.image.data, cred.token);
+              cutoutDataUrl = fetched.dataUrl;
+              finalMime = fetched.mimeType || finalMime;
+            } else if (snapshot.image.data.startsWith('data:')) {
+              cutoutDataUrl = snapshot.image.data;
+            } else {
+              cutoutDataUrl = `data:${finalMime};base64,${snapshot.image.data}`;
+            }
+
+            let r2Info: { r2Key: string; r2Url: string } | null = null;
+            if (settings.r2Enabled && env.R2_IMAGE) {
+              r2Info = await saveImageToR2(env, cutoutDataUrl, finalMime, selectedAgent.name);
+            }
+
+            return {
+              label: selectedAgent.name,
+              image: cutoutDataUrl,
+              mimeType: finalMime,
+              r2Key: r2Info?.r2Key,
+              r2Url: r2Info?.r2Url,
+            };
           }
 
-          return {
-            label: selectedAgent.name,
-            image: cutoutDataUrl,
-            mimeType: finalMime,
-          };
+          throw new HttpError(
+            500,
+            'agent_no_image',
+            `Manyfold Agent ("${selectedAgent.name}") 未回傳圖片結果: Agent 回傳了文字敘述而未提供圖片 artifact (${snapshot.text || '無回應文字'})`
+          );
+        } finally {
+          clearTimeout(timer);
         }
-
-        throw new HttpError(
-          500,
-          'agent_no_image',
-          `Manyfold Agent ("${selectedAgent.name}") 未回傳圖片結果: Agent 回傳了文字敘述而未提供圖片 artifact (${snapshot.text || '無回應文字'})`
-        );
-      } finally {
-        clearTimeout(timer);
+      } catch (err: unknown) {
+        if (err instanceof HttpError) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('Manyfold A2A Error:', message);
+        if (!apiKey || settings.bgRemoveMode === 'agent_only') {
+          throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
+        }
+        console.warn('Falling back to direct Gemini API key legacy path after A2A failure.');
       }
-    } catch (err: unknown) {
-      if (err instanceof HttpError) throw err;
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('Manyfold A2A Error:', message);
-      if (!apiKey) {
-        throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
-      }
-      console.warn('Falling back to direct Gemini API key legacy path after A2A failure.');
     }
   }
 
@@ -169,8 +181,9 @@ Do not return SVG, JSON, a polygon, or a textual explanation.`,
     });
 
     try {
+      const modelName = settings.bgRemoveModel || 'gemini-3.6-flash';
       const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: modelName,
         contents: [
           {
             inlineData: {
@@ -178,9 +191,7 @@ Do not return SVG, JSON, a polygon, or a textual explanation.`,
               data: base64Data,
             },
           },
-          `You are Gemini 3.6 Flash, an expert computer vision model specializing in image segmentation and background removal.
-Analyze all main foreground subjects in this image (e.g. people, pets, products, objects, items).
-Extract the precise boundary contour outlining all main foreground subjects with ultra-high resolution edge accuracy, excluding background elements.
+          settings.geminiSystemPrompt + `
 Return a JSON object with the following schema:
 {
   "label": "short description of all main foreground subjects",
@@ -200,8 +211,10 @@ Return a JSON object with the following schema:
         throw new Error('Gemini API did not return a valid SVG path mask.');
       }
 
+      const label = result.label || 'Subject';
+
       return {
-        label: result.label || 'Subject',
+        label,
         svgPath: result.svgPath,
         boundingBox: result.boundingBox || [0, 0, 1000, 1000],
       };

@@ -36,6 +36,7 @@ import {
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
 import { handleRemoveBg, type RemoveBgRequest } from './remove-bg';
+import { loadAppSettings, saveAppSettings } from './settings-manager';
 
 const SERVICE = 'cloudflare-worker-starter';
 
@@ -74,10 +75,17 @@ const adminHeaderOk = (c: { env: Env; req: { header: (name: string) => string | 
   return safeEqual(c.req.header('x-admin-password') ?? '', required);
 };
 
-// Everything except /api/health, /api/state, and /api/remove-bg needs the password (when one is set).
+// Everything except /api/health, /api/state, /api/remove-bg, and GET /api/r2/* image fetching needs the password (when one is set).
 app.use('/api/*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
-  if (path !== '/api/health' && path !== '/api/state' && path !== '/api/remove-bg' && !adminHeaderOk(c)) {
+  const isPublicR2Image = path.startsWith('/api/r2/') && path !== '/api/r2/list' && c.req.method === 'GET';
+  if (
+    path !== '/api/health' &&
+    path !== '/api/state' &&
+    path !== '/api/remove-bg' &&
+    !isPublicR2Image &&
+    !adminHeaderOk(c)
+  ) {
     throw new HttpError(401, 'admin_password_invalid', 'This deployment requires the admin password.');
   }
   await next();
@@ -177,6 +185,61 @@ app.post('/api/remove-bg', async (c) => {
   }
   const result = await handleRemoveBg(c.env, body);
   return c.json(result);
+});
+
+/* ───────── settings & r2 routes ───────── */
+
+app.get('/api/settings', async (c) => {
+  const settings = await loadAppSettings(c.env);
+  return c.json({ settings });
+});
+
+app.post('/api/settings', async (c) => {
+  const body = (await c.req.json().catch(() => ({}))) as Record<string, unknown>;
+  const updated = await saveAppSettings(c.env, body);
+  return c.json({ settings: updated });
+});
+
+app.get('/api/r2/list', async (c) => {
+  if (!c.env.R2_IMAGE) {
+    return c.json({ items: [], enabled: false, message: 'Cloudflare R2 bucket R2_IMAGE is not bound.' });
+  }
+  const objects = await c.env.R2_IMAGE.list({ limit: 100 });
+  const items = objects.objects.map((obj) => ({
+    key: obj.key,
+    size: obj.size,
+    uploaded: obj.uploaded.toISOString(),
+    httpMetadata: obj.httpMetadata,
+    customMetadata: obj.customMetadata,
+    url: `/api/r2/${encodeURIComponent(obj.key)}`,
+  }));
+  return c.json({ items, enabled: true, truncated: objects.truncated });
+});
+
+app.get('/api/r2/:key', async (c) => {
+  if (!c.env.R2_IMAGE) {
+    throw new HttpError(404, 'r2_not_configured', 'Cloudflare R2 is not configured.');
+  }
+  const key = c.req.param('key');
+  const object = await c.env.R2_IMAGE.get(key);
+  if (!object) {
+    throw new HttpError(404, 'not_found', 'Image not found in R2 storage.');
+  }
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('etag', object.httpEtag);
+  headers.set('Cache-Control', 'public, max-age=31536000');
+  headers.set('Access-Control-Allow-Origin', '*');
+  return new Response(object.body, { headers });
+});
+
+app.delete('/api/r2/:key', async (c) => {
+  if (!c.env.R2_IMAGE) {
+    throw new HttpError(404, 'r2_not_configured', 'Cloudflare R2 is not configured.');
+  }
+  const key = c.req.param('key');
+  await c.env.R2_IMAGE.delete(key);
+  return c.json({ ok: true, key });
 });
 
 app.all('/api/*', () => {

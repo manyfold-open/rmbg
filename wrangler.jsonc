@@ -23,6 +23,12 @@
       "database_id": "7e7e3d7f-8691-40fc-9481-0f8435765067"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "R2_IMAGE",
+      "bucket_name": "rmbg-images"
+    }
+  ],
   "vars": {
     "MANYFOLD_API_BASE_URL": "https://api.manyfold.ai",
     "ENVIRONMENT": "production"

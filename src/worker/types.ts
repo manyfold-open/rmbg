@@ -9,6 +9,9 @@ export interface Env {
   /** D1 database. The starter uses five tables; the rest is yours. */
   DB: D1Database;
 
+  /** Cloudflare R2 bucket for saving output images */
+  R2_IMAGE?: R2Bucket;
+
   /** Gemini API Key for image background removal */
   GEMINI_API_KEY?: string;
 

@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Sparkles, AlertCircle, RefreshCw, Layers, Keyboard } from 'lucide-react';
+import { Sparkles, AlertCircle, RefreshCw, Layers, Keyboard, Settings, Image as ImageIcon } from 'lucide-react';
 import { UploadZone } from './components/UploadZone';
 import { ComparisonSlider } from './components/ComparisonSlider';
 import { BackgroundCustomizer } from './components/BackgroundCustomizer';
 import { ExportToolbar } from './components/ExportToolbar';
 import { HistoryDrawer } from './components/HistoryDrawer';
+import SettingsView from './components/SettingsView';
 import { ToastContainer } from './components/Toast';
-import type { ConnectedAgent } from '../shared/types';
+import type { AppState } from '../shared/types';
 import type { BgConfig, PostProcessConfig, HistoryItem, ToastMessage } from './types/studio';
 import { DEFAULT_POST_PROCESS } from './types/studio';
 import { api } from './api';
@@ -16,6 +17,9 @@ import { compressImageForAI, createCutoutFromSvgPath } from './utils/image';
 const STORAGE_KEY_HISTORY = 'rmbg_atelier_history';
 
 export function App() {
+  const [currentPath, setCurrentPath] = useState<string>(() => window.location.pathname);
+  const [appState, setAppState] = useState<AppState | null>(null);
+
   const [originalImage, setOriginalImage] = useState<string | null>(null);
   const [cutoutImage, setCutoutImage] = useState<string | null>(null);
   const [svgPath, setSvgPath] = useState<string | null>(null);
@@ -26,20 +30,33 @@ export function App() {
   // Background Manyfold Agents state for A2A delegation
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
 
-  const fetchAgents = async () => {
+  const fetchState = async () => {
     try {
-      const res = await api<{ agents: ConnectedAgent[] }>('/api/agents');
+      const res = await api<AppState>('/api/state');
+      setAppState(res);
       if (res.agents && res.agents.length > 0 && !selectedAgentId) {
         setSelectedAgentId(res.agents[0].agentId);
       }
     } catch {
-      // Ignore initial agent fetch error if unauthenticated/unsupported
+      // Ignore initial state fetch error if unauthenticated
     }
   };
 
   useEffect(() => {
-    void fetchAgents();
+    void fetchState();
   }, []);
+
+  // Listen to browser forward/back popstate
+  useEffect(() => {
+    const handlePopState = () => setCurrentPath(window.location.pathname);
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const navigateTo = (path: string) => {
+    window.history.pushState({}, '', path);
+    setCurrentPath(path);
+  };
 
   // Studio customizer state
   const [bgConfig, setBgConfig] = useState<BgConfig>({
@@ -113,7 +130,7 @@ export function App() {
     setPostProcess(DEFAULT_POST_PROCESS);
 
     try {
-      // 1. Compress image payload preserving alpha channel for AI vision processing under 600KB payload limit
+      // 1. Compress image payload preserving alpha channel for AI vision processing
       const compressedImage = await compressImageForAI(dataUrl, 1536, 0.85);
 
       // 2. Call background removal API powered by Manyfold Agent / Gemini 3.6 Flash
@@ -138,6 +155,8 @@ export function App() {
         label?: string;
         image?: string;
         svgPath?: string;
+        r2Key?: string;
+        r2Url?: string;
       };
 
       if (!data.image && !data.svgPath) {
@@ -173,7 +192,11 @@ export function App() {
         });
       }
 
-      showToast(`✦ AI 去背與主體辨識完成 (${extractedLabel})`, 'success');
+      if (data.r2Url) {
+        showToast(`✦ AI 去背完成 (${extractedLabel}) · 已備份至 R2`, 'success');
+      } else {
+        showToast(`✦ AI 去背與主體辨識完成 (${extractedLabel})`, 'success');
+      }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('Background removal error:', message);
@@ -209,7 +232,7 @@ export function App() {
     showToast(`已載入歷史項目：${item.subjectLabel || '去背圖片'}`, 'info');
   };
 
-  // Keyboard Shortcuts Listener (Space: Hold to compare, Ctrl+Z: Reset)
+  // Keyboard Shortcuts Listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -246,13 +269,15 @@ export function App() {
     };
   }, [originalImage, showToast]);
 
+  const isSettingsRoute = currentPath === '/settings' || currentPath.startsWith('/settings');
+
   return (
     <div className="app-shell">
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
       {/* Top Brand Header */}
       <header className="app-topbar">
-        <div className="brand">
+        <div className="brand" onClick={() => navigateTo('/')} style={{ cursor: 'pointer' }}>
           <div className="brand-mark">
             <span>A</span>
           </div>
@@ -263,103 +288,140 @@ export function App() {
             </h1>
           </div>
         </div>
+
+        {/* Top Header Actions */}
+        <div className="topbar-actions">
+          {isSettingsRoute ? (
+            <button
+              type="button"
+              className="button subtle btn-nav-toggle"
+              onClick={() => navigateTo('/')}
+            >
+              <ImageIcon size={16} />
+              <span>去背畫布</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="button subtle btn-nav-toggle"
+              onClick={() => navigateTo('/settings')}
+            >
+              <Settings size={16} />
+              <span>系統與工具設定</span>
+            </button>
+          )}
+        </div>
       </header>
 
-      {/* Main Workspace Area */}
-      <main className="app-main">
-        {/* Step 1: Uploading State */}
-        {!originalImage && (
-          <UploadZone onImageSelected={handleImageSelected} isLoading={isLoading} />
-        )}
+      {/* Main Content View */}
+      {isSettingsRoute ? (
+        <main className="app-main">
+          <SettingsView
+            agents={appState?.agents || []}
+            initialSession={appState?.connect?.session || null}
+            adminRequired={appState?.adminRequired || false}
+            adminOk={appState?.adminOk ?? true}
+            refreshState={fetchState}
+            onBackToCanvas={() => navigateTo('/')}
+            showToast={showToast}
+          />
+        </main>
+      ) : (
+        <main className="app-main">
+          {/* Step 1: Uploading State */}
+          {!originalImage && (
+            <UploadZone onImageSelected={handleImageSelected} isLoading={isLoading} />
+          )}
 
-        {/* Step 2: Processing / Loading Overlay */}
-        {isLoading && (
-          <div className="loading-card">
-            <div className="spinner-wrapper">
-              <RefreshCw size={40} className="spinning-icon" />
+          {/* Step 2: Processing / Loading Overlay */}
+          {isLoading && (
+            <div className="loading-card">
+              <div className="spinner-wrapper">
+                <RefreshCw size={40} className="spinning-icon" />
+              </div>
+              <h3 className="loading-title">AI 正在分析主體輪廓與去背...</h3>
+              <p className="loading-sub">精確分割人像、寵物、商品與各類物件</p>
             </div>
-            <h3 className="loading-title">AI 正在分析主體輪廓與去背...</h3>
-            <p className="loading-sub">精確分割人像、寵物、商品與各類物件</p>
-          </div>
-        )}
+          )}
 
-        {/* Error Notice */}
-        {errorMsg && (
-          <div className="notice error row align-center error-box">
-            <AlertCircle size={20} />
-            <div className="error-content">
-              <strong>去背處理失敗：</strong> {errorMsg}
+          {/* Error Notice */}
+          {errorMsg && (
+            <div className="notice error row align-center error-box">
+              <AlertCircle size={20} />
+              <div className="error-content">
+                <strong>去背處理失敗：</strong> {errorMsg}
+              </div>
+              <button type="button" className="button subtle" onClick={handleReset}>
+                重試
+              </button>
             </div>
-            <button type="button" className="button subtle" onClick={handleReset}>
-              重試
-            </button>
-          </div>
-        )}
+          )}
 
-        {/* Step 3: Editor & Comparison Preview */}
-        {originalImage && !isLoading && (
-          <div className="editor-grid">
-            {/* Left: Interactive Before/After Comparison Slider */}
-            <div className="preview-panel">
-              <div className="panel-header-row">
-                <span className="panel-heading">
-                  <Layers size={16} /> 預設即時對比預覽
-                </span>
-                <div className="panel-badges">
-                  {subjectLabel && (
-                    <span className="badge-subject">
-                      已辨識：{subjectLabel}
-                    </span>
-                  )}
-                  <span className="badge-hint">
-                    <Keyboard size={12} /> 長按 Space 查看原圖
+          {/* Step 3: Editor & Comparison Preview */}
+          {originalImage && !isLoading && (
+            <div className="editor-grid">
+              {/* Left: Interactive Before/After Comparison Slider */}
+              <div className="preview-panel">
+                <div className="panel-header-row">
+                  <span className="panel-heading">
+                    <Layers size={16} /> 預設即時對比預覽
                   </span>
+                  <div className="panel-badges">
+                    {subjectLabel && (
+                      <span className="badge-subject">
+                        已辨識：{subjectLabel}
+                      </span>
+                    )}
+                    <span className="badge-hint">
+                      <Keyboard size={12} /> 長按 Space 查看原圖
+                    </span>
+                  </div>
                 </div>
+
+                <ComparisonSlider
+                  originalImage={originalImage}
+                  cutoutImage={cutoutImage}
+                  svgPath={svgPath}
+                  bgConfig={bgConfig}
+                  postProcess={postProcess}
+                  forceShowOriginal={forceShowOriginal}
+                />
               </div>
 
-              <ComparisonSlider
-                originalImage={originalImage}
-                cutoutImage={cutoutImage}
-                svgPath={svgPath}
-                bgConfig={bgConfig}
-                postProcess={postProcess}
-                forceShowOriginal={forceShowOriginal}
-              />
+              {/* Right: Controls & Export Toolbar */}
+              <div className="controls-panel">
+                <BackgroundCustomizer
+                  config={bgConfig}
+                  onChange={setBgConfig}
+                  postProcess={postProcess}
+                  onPostProcessChange={setPostProcess}
+                  onResetAll={() => {
+                    setPostProcess(DEFAULT_POST_PROCESS);
+                    showToast('已重置後處理與調色', 'info');
+                  }}
+                />
+
+                <ExportToolbar
+                  originalImage={originalImage}
+                  cutoutImage={cutoutImage}
+                  svgPath={svgPath}
+                  bgConfig={bgConfig}
+                  postProcess={postProcess}
+                  onReset={handleReset}
+                  onShowToast={showToast}
+                />
+              </div>
             </div>
+          )}
 
-            {/* Right: Controls & Export Toolbar */}
-            <div className="controls-panel">
-              <BackgroundCustomizer
-                config={bgConfig}
-                onChange={setBgConfig}
-                postProcess={postProcess}
-                onPostProcessChange={setPostProcess}
-                onResetAll={() => {
-                  setPostProcess(DEFAULT_POST_PROCESS);
-                  showToast('已重置後處理與調色', 'info');
-                }}
-              />
-
-              <ExportToolbar
-                originalImage={originalImage}
-                cutoutImage={cutoutImage}
-                svgPath={svgPath}
-                bgConfig={bgConfig}
-                postProcess={postProcess}
-                onReset={handleReset}
-                onShowToast={showToast}
-              />
-            </div>
-          </div>
-        )}
-
-        {/* Session History Drawer */}
-        <HistoryDrawer
-          history={history}
-          onSelect={handleRestoreHistoryItem}
-          onClear={clearHistory}
-        />
-      </main>
+          {/* Session History Drawer */}
+          <HistoryDrawer
+            history={history}
+            onSelect={handleRestoreHistoryItem}
+            onClear={clearHistory}
+          />
+        </main>
+      )}
 
       <footer className="app-footer">
         <p>© 2026 Image Background Remover Tool — Powered by Cloudflare Workers & Manyfold AI</p>

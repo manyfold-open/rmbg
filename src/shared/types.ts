@@ -74,3 +74,26 @@ export type ChatEvent =
 export interface ApiErrorBody {
   error: { code: string; message: string };
 }
+
+export interface AppSettings {
+  bgRemoveModel: string;
+  bgRemoveMode: 'auto' | 'agent_only' | 'gemini_only';
+  geminiSystemPrompt: string;
+  r2Enabled: boolean;
+  r2BucketName: string;
+  maxImageResolution: number;
+}
+
+export interface R2Item {
+  key: string;
+  size: number;
+  uploaded: string;
+  httpMetadata?: {
+    contentType?: string;
+  };
+  customMetadata?: {
+    label?: string;
+    createdAt?: string;
+  };
+  url: string;
+}
