@@ -16,6 +16,7 @@
 
 ## Verification
 
+- Layout hotfix verified: the homepage now pins the hero copy to the left grid area and the upload card to the right grid area, with legacy landing selectors overridden.
 - `npm test` — 7 test files, 91 tests passed.
 - `npm run check` — TypeScript, Vite production build, and Wrangler deploy dry-run passed.
 - `git diff --check` — passed.
