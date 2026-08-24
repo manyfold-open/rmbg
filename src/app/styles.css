@@ -1931,6 +1931,11 @@ body,
 }
 
 .atelier-upload-hero {
+  position: static;
+  left: auto;
+  right: auto;
+  width: 100%;
+  overflow: visible;
   display: grid !important;
   grid-template-columns: minmax(0, 1fr) minmax(390px, 1fr) !important;
   grid-template-areas: 'copy upload';
