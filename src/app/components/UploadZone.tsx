@@ -61,43 +61,51 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
   };
 
   return (
-    <div className="upload-container">
-      {/* Main Studio Upload Hero Card */}
-      <div
-        className={`dropzone ${isDragOver ? 'drag-active' : ''} ${isLoading ? 'disabled' : ''}`}
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onClick={() => !isLoading && fileInputRef.current?.click()}
-      >
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="image/png, image/jpeg, image/webp"
-          style={{ display: 'none' }}
-          onChange={handleFileChange}
-          disabled={isLoading}
-        />
+    <section className="upload-hero">
+      <div className="upload-hero-inner">
+        <span className="hero-eyebrow">
+          <ImageIcon size={12} /> AI POWERED BACKGROUND REMOVAL
+        </span>
+        <h1 className="hero-title">
+          拖一張照片，<br />
+          AI 幫你去背
+        </h1>
+        <p className="hero-subtitle">精確分割人像、寵物、商品與各類物件，幾秒完成</p>
 
-        <div className="dropzone-icon">
-          <UploadCloud size={32} className="pulse-icon" />
+        <div className="upload-container">
+          <div
+            className={`dropzone ${isDragOver ? 'drag-active' : ''} ${isLoading ? 'disabled' : ''}`}
+            onDrop={handleDrop}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onClick={() => !isLoading && fileInputRef.current?.click()}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png, image/jpeg, image/webp"
+              style={{ display: 'none' }}
+              onChange={handleFileChange}
+              disabled={isLoading}
+            />
+
+            <button className="button primary select-btn" type="button" disabled={isLoading}>
+              <UploadCloud size={16} />
+              上傳圖片
+            </button>
+
+            <p className="dropzone-title">或拖曳圖片到此處</p>
+            <p className="dropzone-hint">支援 PNG, JPG, WEBP 高清格式（最大 15MB）</p>
+          </div>
+
+          {errorMsg && (
+            <div className="notice error row align-center">
+              <AlertCircle size={18} />
+              <span>{errorMsg}</span>
+            </div>
+          )}
         </div>
-
-        <h3 className="dropzone-title">拖曳圖片到此處，或點擊選擇檔案</h3>
-        <p className="dropzone-hint">支援 PNG, JPG, WEBP 高清格式（最大 15MB）</p>
-
-        <button className="button primary select-btn" type="button" disabled={isLoading}>
-          <ImageIcon size={16} />
-          上傳圖片
-        </button>
       </div>
-
-      {errorMsg && (
-        <div className="notice error row align-center">
-          <AlertCircle size={18} />
-          <span>{errorMsg}</span>
-        </div>
-      )}
-    </div>
+    </section>
   );
 };
