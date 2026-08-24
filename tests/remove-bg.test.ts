@@ -235,6 +235,45 @@ describe('remove-bg handler', () => {
     expect(res.r2Key).toMatch(/^job_[a-f0-9]{32}_output\.png$/);
   });
 
+  it('still returns the cutout when the A2A stream dies after the upload', async () => {
+    // Production, 2026-08-24: the stream died with "Network connection lost" after ~2min
+    // and the whole job was reported failed. But the upload rides on its own HTTPS
+    // request — losing the stream says nothing about whether the result arrived.
+    vi.spyOn(connectModule, 'listConnectedAgents').mockResolvedValueOnce([
+      {
+        agentId: 'agent-1',
+        name: 'Test Agent',
+        description: 'Test',
+        rpcUrl: 'https://api.manyfold.ai/rpc',
+        expiresAt: null,
+        verified: true,
+        warning: null,
+        connectedAt: '2026-08-21T00:00:00Z',
+      },
+    ]);
+    vi.spyOn(connectModule, 'credentialFor').mockResolvedValueOnce({
+      rpcUrl: 'https://api.manyfold.ai/rpc',
+      token: 'test-token',
+      label: 'Test Agent',
+    });
+
+    const r2 = makeR2();
+    vi.spyOn(a2aModule, 'consumeA2AStream').mockImplementationOnce(async () => {
+      const key = [...r2.store.keys()].find((k) => k.endsWith('_input.png'))!;
+      const jobId = key.slice('job_'.length, -'_input.png'.length);
+      await r2.bucket.put(`job_${jobId}_output.png`, bytesOf(CUTOUT_PNG_BASE64), {
+        httpMetadata: { contentType: 'image/png' },
+      });
+      throw new Error('Network connection lost.');
+    });
+
+    const mockEnv = { DB: mockDb, R2_IMAGE: r2.bucket } as Env;
+    const res = await handleRemoveBg(mockEnv, { image: `data:image/png;base64,${CUTOUT_PNG_BASE64}` }, 'https://test.local');
+
+    expect(res.r2Key).toMatch(/^job_[a-f0-9]{32}_output\.png$/);
+    expect(res.image).toContain('data:image/png;base64,iVBORw0KGgo');
+  });
+
   it('rejects a placeholder even when it arrived through the upload', async () => {
     vi.spyOn(connectModule, 'listConnectedAgents').mockResolvedValueOnce([
       {

@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { HttpError, type Env } from './types';
 import { listConnectedAgents, credentialFor } from './connect';
-import { consumeA2AStream, fetchImageAsDataUrl } from './a2a';
+import { consumeA2AStream, fetchImageAsDataUrl, type StreamSnapshot } from './a2a';
 import { loadAppSettings } from './settings-manager';
 import { base64ToBytes, putImageAtKey, saveImageToR2 } from './r2';
 import { createJobTicket, pruneJobTickets } from './job';
@@ -24,6 +24,33 @@ export interface RemoveBgResponse {
 }
 
 const REMOVE_BG_TIMEOUT_MS = 180_000;
+
+/**
+ * How long to keep watching R2 after the A2A stream *breaks*.
+ *
+ * The stream is a progress channel; the upload is the delivery channel. A lost stream —
+ * seen in production as "Network connection lost" after ~2 minutes — tells us nothing
+ * about the upload, so keep looking before calling the job failed. A stream that ends
+ * cleanly needs no grace at all: the agent is instructed to reply only after its upload
+ * returns 200, so a finished turn with an empty key means it never uploaded.
+ */
+const UPLOAD_GRACE_BROKEN_MS = 60_000;
+const UPLOAD_POLL_MS = 2_000;
+
+/** Poll R2 for the agent's upload until it lands or the grace period runs out. */
+async function waitForUpload(
+  bucket: R2Bucket,
+  key: string,
+  graceMs: number,
+): Promise<R2ObjectBody | null> {
+  const deadline = Date.now() + graceMs;
+  for (;;) {
+    const hit = await bucket.get(key);
+    if (hit) return hit;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, UPLOAD_POLL_MS));
+  }
+}
 
 /** Anything smaller than this is a placeholder, not a cutout. */
 const MIN_CUTOUT_BYTES = 512;
@@ -212,7 +239,11 @@ export async function handleRemoveBg(
         const messageId = `rmbg-${crypto.randomUUID()}`;
 
         try {
-          const snapshot = await consumeA2AStream({
+          let snapshot: StreamSnapshot | null = null;
+          let streamError: string | null = null;
+
+          try {
+            snapshot = await consumeA2AStream({
             cred,
             params: {
               message: {
@@ -248,11 +279,21 @@ export async function handleRemoveBg(
               },
             },
             signal: controller.signal,
-          });
+            });
+          } catch (streamErr: unknown) {
+            // Do not give up here. The agent's upload travels over plain HTTPS and is
+            // completely independent of this stream, so a dropped stream is not evidence
+            // that the job failed — only that we stopped hearing about it.
+            streamError = streamErr instanceof Error ? streamErr.message : String(streamErr);
+            console.error('Manyfold A2A stream error:', streamError);
+          }
 
-          // The upload is the expected channel, so look there before anything else. It has
-          // already landed: the agent uploads during its turn, and the turn is over.
-          const uploaded = await env.R2_IMAGE.get(ticket.outputKey);
+          // The upload is the expected channel, so look there before anything else.
+          const uploaded = await waitForUpload(
+            env.R2_IMAGE,
+            ticket.outputKey,
+            snapshot ? 0 : UPLOAD_GRACE_BROKEN_MS,
+          );
           if (uploaded) {
             const bytes = new Uint8Array(await uploaded.arrayBuffer());
             const finalMime = uploaded.httpMetadata?.contentType || 'image/png';
@@ -269,7 +310,7 @@ export async function handleRemoveBg(
             };
           }
 
-          if (snapshot.image) {
+          if (snapshot?.image) {
             let cutoutDataUrl: string;
             let finalMime = snapshot.image.mimeType || 'image/png';
 
@@ -303,13 +344,16 @@ export async function handleRemoveBg(
             };
           }
 
-          // Nothing in R2 and nothing scrapeable from the reply. The agent's own words are
-          // the only diagnosis available, so pass them through rather than a generic message.
+          // Nothing in R2 and nothing scrapeable from the reply. Whatever the agent last
+          // said is the only diagnosis available, so pass it through verbatim rather than
+          // replacing it with a generic message. Name the job too: its output key is
+          // readable at /api/r2/ if the upload turns up late.
           throw new HttpError(
             500,
             'agent_no_image',
             `Manyfold Agent ("${selectedAgent.name}") 沒有把結果上傳到 ${uploadUrl}。` +
-              `Agent 的回覆:${snapshot.text || '(無回應文字)'}`,
+              (streamError ? `連線問題:${streamError}。` : '') +
+              `Agent 的回覆:${snapshot?.text || '(無回應文字)'}`,
           );
         } finally {
           clearTimeout(timer);
