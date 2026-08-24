@@ -37,25 +37,57 @@ An A2A message with a file part (the image, for context only) and a text part na
 curl -sS -o /tmp/input.png '<input URL>'
 ```
 
-**Step 2 — ask `gemini-3.1-flash-image` for a flat magenta background, not for transparency.**
-Save its output as `/tmp/gen.png`.
+**Step 1.5 — pick a background colour that is nothing like this subject.** A fixed colour
+(always magenta) used to be asked for unconditionally, and it failed on any subject whose own
+colours sit close to magenta — a pink toy, for instance: every pixel near that hue picked up
+partial alpha from the plain distance-to-key formula, and un-mixing bled key colour into it,
+leaving a visible tinted ring around the subject in production on 2026-08-24. Compute the
+safest colour for *this* photo instead of guessing:
+
+```bash
+python3 - <<'EOF'
+from PIL import Image
+import numpy as np
+img = np.array(Image.open('/tmp/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
+if len(img) > 20000:
+    img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
+candidates = {
+    'magenta': (255, 0, 255), 'green': (0, 255, 0), 'cyan': (0, 255, 255),
+    'yellow': (255, 255, 0), 'blue': (0, 0, 255), 'red': (255, 0, 0),
+}
+scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
+          for name, rgb in candidates.items()}
+name = max(scores, key=scores.get)
+r, g, b = candidates[name]
+print(f'KEY {name} {r} {g} {b} mindist={scores[name]:.0f}')
+EOF
+```
+
+That prints e.g. `KEY cyan 0 255 255 mindist=142`. Use exactly that colour and that `mindist`
+for steps 2 and 3 — do not default to magenta without checking this output. If `mindist` is
+under 100, this subject spans most of the colour wheel and no candidate is fully safe; proceed
+anyway, but check `/tmp/output.png`'s edges after step 3 and say so honestly if a fringe is
+still visible instead of uploading it silently.
+
+**Step 2 — ask `gemini-3.1-flash-image` for a flat background in the colour step 1.5 printed,
+not for transparency.** Save its output as `/tmp/gen.png`.
 
 This is the single most important instruction here, and it is counter-intuitive. An image
 generator has no alpha channel to write to. Asked for a transparent background it will do the
 only thing it can: *paint a picture of transparency* — a grey-and-white checkerboard — as
 ordinary opaque pixels. Ask for something it can actually produce instead:
 
-> the same image, with every background pixel replaced by solid pure magenta, RGB exactly
-> (255, 0, 255) — one flat colour, no gradient, no shadow, no vignette, no texture
+> the same image, with every background pixel replaced by solid pure `<colour>`, RGB exactly
+> `<r>, <g>, <b>` (the values step 1.5 printed) — one flat colour, no gradient, no shadow, no
+> vignette, no texture
 
 Keep the subject's own pixels: colours, texture, hair, fur, edge detail, proportions. Do not
-restyle, recolour, crop or recompose it. If the subject itself contains magenta, use pure green
-(0, 255, 0) and key on that colour instead in step 3.
+restyle, recolour, crop or recompose it.
 
 **Step 3 — convert that flat colour into a real alpha channel, back at the original size.**
 This step, not Gemini, is what produces the transparency. It also suppresses colour spill:
 semi-transparent edge pixels are an anti-aliased blend of subject and key colour, so the key
-colour is un-mixed back out of them rather than left as a magenta fringe.
+colour is un-mixed back out of them rather than left as a fringe.
 
 ```bash
 python3 - <<'EOF'
@@ -64,9 +96,11 @@ import numpy as np
 src = Image.open('/tmp/input.png').convert('RGB')
 gen = Image.open('/tmp/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
 rgb = np.array(gen).astype(np.float32)
-key = np.array([255, 0, 255], dtype=np.float32)   # match the colour asked for in step 2
+key = np.array([R, G, B], dtype=np.float32)   # the RGB step 1.5 printed
+mindist = MINDIST                             # the mindist number step 1.5 printed
 dist = np.abs(rgb - key).sum(axis=2)
-alpha = np.clip((dist - 60) * 4, 0, 255).astype(np.uint8)
+lo, hi = 20.0, max(mindist, 21.0)
+alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
 a = (alpha.astype(np.float32) / 255.0)[..., None]
 decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
 rgb_out = np.where(alpha[..., None] < 255, decontam, rgb).astype(np.uint8)
@@ -74,11 +108,20 @@ Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save('/tmp/output.png')
 EOF
 ```
 
-With ImageMagick instead (no spill suppression, use only if PIL/numpy are unavailable):
+Replace `key` and `mindist` above with step 1.5's actual numbers before running. Getting
+`mindist` right matters as much as the colour itself: a fixed threshold here (an earlier
+version hardcoded `(dist - 60) * 4`) saturates to fully-opaque too early whenever the subject's
+colour sits anywhere near the key, baking a solid ring of raw background colour permanently
+into the silhouette instead of blending it away. Scaling the ramp to the real key-to-subject
+distance for this photo is what actually removes it — that ring, not a soft blur, is what a
+"colour fringe" from this pipeline actually looks like.
+
+With ImageMagick instead (no spill suppression, use only if PIL/numpy are unavailable; replace
+`<colour>` with the name step 1.5 printed):
 
 ```bash
 convert /tmp/gen.png -resize "$(identify -format '%wx%h!' /tmp/input.png)" \
-  -fuzz 20% -transparent magenta /tmp/output.png
+  -fuzz 20% -transparent <colour> /tmp/output.png
 ```
 
 If neither tool exists, do not improvise and do not upload — say so in your reply.

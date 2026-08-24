@@ -96,11 +96,30 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * bytes onto its filesystem, and its card only allows text back. So the real work is done
  * against URLs, and the prompt spells out the commands rather than describing them.
  *
- * Step 2 asks for a flat magenta background rather than transparency on purpose. Asked for
+ * STEP 2 asks for a flat colour background rather than transparency on purpose. Asked for
  * transparency directly, the model painted a grey-and-white checkerboard — the *picture* of
  * transparency — as opaque RGB pixels, because an image generator has no alpha channel to
  * write to. A uniform colour is something it can actually produce, and turning one colour
  * into alpha is arithmetic the agent can do exactly.
+ *
+ * Which colour is chosen dynamically per image (STEP 1.5), not fixed to magenta. A subject
+ * that is itself close to the key colour (a pink toy against magenta, say) doesn't fail
+ * cleanly: every pixel near that hue picks up partial alpha from the plain distance-to-key
+ * formula, and un-mixing then bleeds key colour into it, leaving a visible tinted fringe
+ * around the subject — this happened in production 2026-08-24 on a pink plush toy. Picking
+ * whichever candidate colour is farthest from every colour actually present in *this* photo,
+ * instead of asking the agent to eyeball "is this subject magenta-ish", removes most of that
+ * failure mode instead of relying on a judgement call.
+ *
+ * That alone was not enough. The alpha ramp in STEP 3 used to saturate to fully-opaque at a
+ * *fixed* key-distance (a hardcoded threshold and slope), regardless of how close the actual
+ * subject colours were to the key. Reproduced locally: pixels still mostly background-coloured
+ * — a soft anti-aliased edge only ~25% blended toward the subject — got misread as 100% subject
+ * and left completely uncorrected, baking a solid ring of raw key colour permanently into the
+ * output right at the silhouette. That is a *worse* artefact than a diffuse fringe: it is a
+ * crisp, fully-opaque coloured outline, matching exactly what showed up in production. The fix
+ * is to scale the ramp to the actual key-to-subject distance for this image (STEP 1.5's
+ * `mindist`) instead of a constant tuned for nothing in particular.
  */
 function agentInstructions(inputUrl: string, uploadUrl: string, token: string, model: string): string {
   return `Remove the background from an image. Do the work with shell commands — do not answer from the attached preview alone.
@@ -108,17 +127,46 @@ function agentInstructions(inputUrl: string, uploadUrl: string, token: string, m
 STEP 1 — download the image:
   curl -sS -o /tmp/input.png '${inputUrl}'
 
-STEP 2 — use ${model} to replace the background with flat magenta.
+STEP 1.5 — pick a background colour that is nothing like this subject:
+
+  python3 - <<'EOF'
+  from PIL import Image
+  import numpy as np
+  img = np.array(Image.open('/tmp/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
+  if len(img) > 20000:
+      img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
+  candidates = {
+      'magenta': (255, 0, 255),
+      'green': (0, 255, 0),
+      'cyan': (0, 255, 255),
+      'yellow': (255, 255, 0),
+      'blue': (0, 0, 255),
+      'red': (255, 0, 0),
+  }
+  scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
+            for name, rgb in candidates.items()}
+  name = max(scores, key=scores.get)
+  r, g, b = candidates[name]
+  print(f'KEY {name} {r} {g} {b} mindist={scores[name]:.0f}')
+  EOF
+
+That prints one line, e.g. \`KEY cyan 0 255 255 mindist=142\` — the colour and RGB triple that
+is safest for STEP 2 and STEP 3 below. Use exactly that colour for the rest of these steps,
+even if it is magenta — do not default to magenta without checking this output. If mindist is
+under 100, this subject spans most of the colour wheel and no candidate is fully safe; proceed
+with the printed colour anyway, but after STEP 3 look at /tmp/output.png's edges and say so
+honestly in your reply if you can see a colour fringe, instead of uploading it silently.
+
+STEP 2 — use ${model} to replace the background with the flat colour STEP 1.5 printed.
 Send /tmp/input.png to ${model} and ask for the same image with every background pixel
-replaced by solid pure magenta, RGB exactly (255, 0, 255). Save its output as /tmp/gen.png.
+replaced by that solid colour, at exactly the RGB triple STEP 1.5 printed. Save its output as
+/tmp/gen.png.
 
   - Do NOT ask for transparency, and do NOT accept a grey-and-white checkerboard. A
     checkerboard is a drawing of transparency, not transparency, and it will be rejected.
   - The background must be one flat colour: no gradient, no shadow, no vignette, no texture.
   - Keep the subject's own pixels: colours, texture, hair, fur, edge detail, proportions.
     Do not restyle, recolour, crop or recompose the subject.
-  - If the subject itself contains magenta, use solid pure green (0, 255, 0) instead and use
-    that colour in step 3.
 
 STEP 3 — turn that flat colour into a real alpha channel, at the original size:
 
@@ -128,20 +176,33 @@ STEP 3 — turn that flat colour into a real alpha channel, at the original size
   src = Image.open('/tmp/input.png').convert('RGB')
   gen = Image.open('/tmp/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
   rgb = np.array(gen).astype(np.float32)
-  key = np.array([255, 0, 255], dtype=np.float32)   # match the colour you asked for in step 2
+  key = np.array([KEY_R, KEY_G, KEY_B], dtype=np.float32)   # NOT valid Python yet — see below
+  mindist = MINDIST                                          # NOT valid Python yet — see below
   dist = np.abs(rgb - key).sum(axis=2)
-  alpha = np.clip((dist - 60) * 4, 0, 255).astype(np.uint8)
+  lo, hi = 20.0, max(mindist, 21.0)
+  alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
   # Semi-transparent edge pixels are an anti-aliased blend of subject and key colour.
-  # Un-mix the key colour back out so the edge doesn't carry a magenta fringe.
+  # Un-mix the key colour back out so the edge doesn't carry a colour fringe.
   a = (alpha.astype(np.float32) / 255.0)[..., None]
   decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
   rgb_out = np.where(alpha[..., None] < 255, decontam, rgb).astype(np.uint8)
   Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save('/tmp/output.png')
   EOF
 
+Before running that script, replace \`KEY_R, KEY_G, KEY_B\` and \`MINDIST\` with the numbers
+STEP 1.5 printed (e.g. if STEP 1.5 printed \`KEY cyan 0 255 255 mindist=142\`, the lines become
+\`key = np.array([0, 255, 255], dtype=np.float32)\` and \`mindist = 142\`). The key must match
+STEP 2's background colour exactly, or nothing will match and the whole image will come out
+transparent. The mindist substitution matters just as much: it sets how wide the alpha ramp
+is, and a ramp that's too narrow for this image is exactly what used to bake a solid ring of
+raw background colour into the silhouette instead of blending it away — do not hardcode a
+different number here no matter how the image looks.
+
 If PIL or numpy is unavailable, the equivalent with ImageMagick is:
   convert /tmp/gen.png -resize "$(identify -format '%wx%h!' /tmp/input.png)" \\
-    -fuzz 20% -transparent magenta /tmp/output.png
+    -fuzz 20% -transparent COLOURNAME /tmp/output.png
+(replace COLOURNAME with the colour name STEP 1.5 printed, e.g. cyan — ImageMagick knows all
+six candidate names directly)
 If neither tool exists, do not improvise and do not upload — say so in your reply instead.
 
 STEP 4 — upload the result:
@@ -521,7 +582,7 @@ export async function handleRemoveBg(
           inputUrl: `${origin}/api/r2/${encodeURIComponent(ticket.inputKey)}`,
           uploadUrl: `${origin}/api/job/${ticket.jobId}/output`,
           mimeType,
-          // Fixed, not settings.bgRemoveModel: only an -image model can do the magenta-key
+          // Fixed, not settings.bgRemoveModel: only an -image model can do the chroma-key
           // step the agent runs (see GEMINI.md). bgRemoveModel picks the text model for the
           // legacy direct-API SVG-path fallback below, which is a different job entirely.
           model: 'gemini-3.1-flash-image',
