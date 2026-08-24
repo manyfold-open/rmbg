@@ -13,12 +13,12 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
 
   const processFile = (file: File) => {
     if (!file.type.startsWith('image/')) {
-      setErrorMsg('請上傳有效的圖片檔案 (PNG, JPG, WEBP)。');
+      setErrorMsg('Please upload a valid image file (PNG, JPG, or WEBP).');
       return;
     }
 
     if (file.size > 15 * 1024 * 1024) {
-      setErrorMsg('檔案大小超過限制 (最大 15MB)。');
+      setErrorMsg('This file is larger than the 15 MB limit.');
       return;
     }
 
@@ -61,20 +61,35 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
   };
 
   return (
-    <section className="upload-hero">
-      <div className="upload-hero-inner">
-        <span className="hero-eyebrow">
-          <ImageIcon size={12} /> AI POWERED BACKGROUND REMOVAL
+    <section className="upload-hero atelier-upload-hero">
+      <div className="atelier-hero-copy">
+        <span className="hero-eyebrow atelier-eyebrow">
+          <ImageIcon size={12} /> AI IMAGE STUDIO
         </span>
-        <h1 className="hero-title">
-          拖一張照片，<br />
-          AI 幫你去背
-        </h1>
-        <p className="hero-subtitle">精確分割人像、寵物、商品與各類物件，幾秒完成</p>
+        <h1 className="hero-title">Keep the subject.<br />Lose the noise.</h1>
+        <p className="hero-subtitle">Remove the background from portraits, products, and everyday images with precise AI-powered separation.</p>
+        <div className="atelier-hero-actions">
+          <button className="button primary" type="button" disabled={isLoading} onClick={() => fileInputRef.current?.click()}>
+            <UploadCloud size={16} /> Upload image
+          </button>
+          <span className="atelier-action-note">No account required</span>
+        </div>
+        <div className="atelier-hero-specs" aria-label="Workflow">
+          <div><strong>01</strong><span>Detect subject</span></div>
+          <div><strong>02</strong><span>Remove background</span></div>
+          <div><strong>03</strong><span>Export cleanly</span></div>
+        </div>
+      </div>
 
-        <div className="upload-container">
+      <div className="upload-container atelier-upload-container">
+        <div className="atelier-upload-heading">
+          <span className="atelier-upload-icon"><ImageIcon size={19} /></span>
+          <div><strong>Drop your image here</strong><span>or choose a file to begin</span></div>
+        </div>
+        <div className="atelier-upload-meta">PNG, JPG, WEBP <span>·</span> up to 15 MB</div>
+        <div className="atelier-upload-card">
           <div
-            className={`dropzone ${isDragOver ? 'drag-active' : ''} ${isLoading ? 'disabled' : ''}`}
+            className={`dropzone atelier-dropzone ${isDragOver ? 'drag-active' : ''} ${isLoading ? 'disabled' : ''}`}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
@@ -89,22 +104,17 @@ export const UploadZone: React.FC<UploadZoneProps> = ({ onImageSelected, isLoadi
               disabled={isLoading}
             />
 
-            <button className="button primary select-btn" type="button" disabled={isLoading}>
-              <UploadCloud size={16} />
-              上傳圖片
-            </button>
-
-            <p className="dropzone-title">或拖曳圖片到此處</p>
-            <p className="dropzone-hint">支援 PNG, JPG, WEBP 高清格式（最大 15MB）</p>
+            <span className="atelier-dropzone-mark"><UploadCloud size={20} /></span>
+            <p className="dropzone-title">Choose a file or drop it here</p>
+            <p className="dropzone-hint">Your image stays in this workspace while it is processed.</p>
           </div>
-
-          {errorMsg && (
-            <div className="notice error row align-center">
-              <AlertCircle size={18} />
-              <span>{errorMsg}</span>
-            </div>
-          )}
         </div>
+        {errorMsg && (
+          <div className="notice error row align-center">
+            <AlertCircle size={18} />
+            <span>{errorMsg}</span>
+          </div>
+        )}
       </div>
     </section>
   );

@@ -1,0 +1,24 @@
+# Atelier homepage design QA
+
+## Scope
+
+- Integrated the Atelier Apple-inspired layout into the production React homepage.
+- Preserved the existing upload, background-removal API, agent polling, history, comparison slider, background controls, color controls, and PNG export flows.
+- Removed visible Traditional Chinese UI copy across the client and user-facing worker errors.
+- Forced the product surface to a white light theme.
+
+## States reviewed
+
+- Empty: split hero with custom upload/drop zone and workflow markers.
+- Processing: dedicated progress state with live agent status copy.
+- Studio / Ready: comparison canvas, background controls, effects, color grading, history, and export actions.
+- Settings: English-only labels and the existing Manyfold / Cloudflare controls.
+
+## Verification
+
+- `npm test` — 7 test files, 91 tests passed.
+- `npm run check` — TypeScript, Vite production build, and Wrangler deploy dry-run passed.
+- `git diff --check` — passed.
+- Local preview: `http://127.0.0.1:5173/`
+
+final result: passed

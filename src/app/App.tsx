@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Sparkles, AlertCircle, RefreshCw, Layers, Keyboard, Settings, Image as ImageIcon } from 'lucide-react';
+import { AlertCircle, RefreshCw, Layers, Keyboard, Settings, Image as ImageIcon } from 'lucide-react';
 import { UploadZone } from './components/UploadZone';
 import { ComparisonSlider } from './components/ComparisonSlider';
 import { BackgroundCustomizer } from './components/BackgroundCustomizer';
@@ -120,7 +120,7 @@ export function App() {
     try {
       localStorage.removeItem(STORAGE_KEY_HISTORY);
     } catch {}
-    showToast('歷史紀錄已全部清除', 'info');
+    showToast('All history has been cleared', 'info');
   };
 
   const handleImageSelected = async (dataUrl: string) => {
@@ -152,7 +152,7 @@ export function App() {
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         const errDetail = errorData.error?.message || errorData.message || `HTTP ${response.status}`;
-        throw new Error(`去背處理失敗 (${errDetail})`);
+        throw new Error(`Background removal failed (${errDetail})`);
       }
 
       const data = (await response.json()) as {
@@ -171,7 +171,7 @@ export function App() {
       if (data.jobId && data.statusUrl) {
         const agentLabel = data.label || 'Manyfold Agent';
         setSubjectLabel(agentLabel);
-        setProgressHint(`已交給 ${agentLabel},等待去背結果…`);
+        setProgressHint(`Handed to ${agentLabel}. Waiting for the result…`);
 
         const { dataUrl: cutout } = await waitForJobResult(data.statusUrl, (message) =>
           setProgressHint(message),
@@ -185,15 +185,15 @@ export function App() {
           svgPath: null,
           subjectLabel: agentLabel,
         });
-        showToast(`✦ AI 去背完成 (${agentLabel}) · 已備份至 R2`, 'success');
+        showToast(`✦ Background removed (${agentLabel}) · backed up to R2`, 'success');
         return;
       }
 
       if (!data.image && !data.svgPath) {
-        throw new Error('去背處理失敗：未收到 Agent 去背圖片結果。');
+        throw new Error('Background removal failed: no cutout image was returned.');
       }
 
-      const extractedLabel = data.label || '辨識成功';
+      const extractedLabel = data.label || 'Subject detected';
       setSubjectLabel(extractedLabel);
 
       if (data.image) {
@@ -223,9 +223,9 @@ export function App() {
       }
 
       if (data.r2Url) {
-        showToast(`✦ AI 去背完成 (${extractedLabel}) · 已備份至 R2`, 'success');
+        showToast(`✦ Background removed (${extractedLabel}) · backed up to R2`, 'success');
       } else {
-        showToast(`✦ AI 去背與主體辨識完成 (${extractedLabel})`, 'success');
+        showToast(`✦ Background removed and subject detected (${extractedLabel})`, 'success');
       }
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -261,7 +261,7 @@ export function App() {
     setSvgPath(item.svgPath ?? null);
     setSubjectLabel(item.subjectLabel);
     setPostProcess(DEFAULT_POST_PROCESS);
-    showToast(`已載入歷史項目：${item.subjectLabel || '去背圖片'}`, 'info');
+    showToast(`Loaded history item: ${item.subjectLabel || 'background removal'}`, 'info');
   };
 
   // Keyboard Shortcuts Listener
@@ -282,7 +282,7 @@ export function App() {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && originalImage) {
         e.preventDefault();
         handleReset();
-        showToast('已重置畫布與設定', 'info');
+        showToast('Canvas and settings reset', 'info');
       }
     };
 
@@ -304,42 +304,25 @@ export function App() {
   const isSettingsRoute = currentPath === '/settings' || currentPath.startsWith('/settings');
 
   return (
-    <div className="app-shell">
+    <div className="app-shell atelier-app-shell">
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
 
-      {/* Top Brand Header */}
-      <header className="app-topbar">
-        <div className="brand" onClick={() => navigateTo('/')} style={{ cursor: 'pointer' }}>
-          <div className="brand-mark">
-            <span>A</span>
-          </div>
-          <div className="brand-text-group">
-            <span className="brand-tag">ATELIER STUDIO</span>
-            <h1 className="brand-title">
-              Photo Editing & BG Remover <span className="badge-ai"><Sparkles size={12} /> AI Powered</span>
-            </h1>
-          </div>
-        </div>
-
-        {/* Top Header Actions */}
-        <div className="topbar-actions">
+      <header className="atelier-header">
+        <button type="button" className="atelier-brand" onClick={() => navigateTo('/')}>
+          <img src="/atelier-icon.png" alt="Atelier" className="atelier-brand-icon" />
+          <span>ATELIER</span>
+        </button>
+        <div className="atelier-header-actions">
+          <span className="atelier-header-note">Private image workspace</span>
           {isSettingsRoute ? (
-            <button
-              type="button"
-              className="button subtle btn-nav-toggle"
-              onClick={() => navigateTo('/')}
-            >
-              <ImageIcon size={16} />
-              <span>去背畫布</span>
+            <button type="button" className="atelier-header-button" onClick={() => navigateTo('/')}>
+              <ImageIcon size={15} />
+              <span>Studio</span>
             </button>
           ) : (
-            <button
-              type="button"
-              className="button subtle btn-nav-toggle"
-              onClick={() => navigateTo('/settings')}
-            >
-              <Settings size={16} />
-              <span>系統與工具設定</span>
+            <button type="button" className="atelier-header-button" onClick={() => navigateTo('/settings')}>
+              <Settings size={15} />
+              <span>Settings</span>
             </button>
           )}
         </div>
@@ -347,7 +330,7 @@ export function App() {
 
       {/* Main Content View */}
       {isSettingsRoute ? (
-        <main className="app-main">
+        <main className="app-main atelier-main">
           <SettingsView
             agents={appState?.agents || []}
             initialSession={appState?.connect?.session || null}
@@ -359,7 +342,7 @@ export function App() {
           />
         </main>
       ) : (
-        <main className="app-main">
+        <main className="app-main atelier-main">
           {/* Step 1: Uploading State */}
           {!originalImage && (
             <UploadZone onImageSelected={handleImageSelected} isLoading={isLoading} />
@@ -367,18 +350,14 @@ export function App() {
 
           {/* Step 2: Processing / Loading Overlay */}
           {isLoading && (
-            <div className="loading-card">
-              <div className="spinner-wrapper">
-                <RefreshCw size={40} className="spinning-icon" />
-              </div>
-              <h3 className="loading-title">AI 正在分析主體輪廓與去背...</h3>
-              <p className="loading-sub">
-                {progressHint ?? '精確分割人像、寵物、商品與各類物件'}
-              </p>
-              {progressHint && (
-                <p className="loading-sub">Agent 去背約需 5 分鐘,請保持此頁開啟。</p>
-              )}
-            </div>
+            <section className="atelier-processing" aria-live="polite">
+              <div className="processing-mark"><RefreshCw size={22} className="spinning-icon" /></div>
+              <span className="atelier-eyebrow">PROCESSING IMAGE</span>
+              <h2>Separating the subject.</h2>
+              <p>{progressHint ?? 'Detecting edges, hair, and transparent detail.'}</p>
+              <div className="processing-progress" aria-hidden="true"><span /></div>
+              <span className="processing-meta">{progressHint ? 'Agent processing can take a few minutes.' : 'Usually ready in a few seconds.'}</span>
+            </section>
           )}
 
           {/* Error Notice */}
@@ -386,31 +365,42 @@ export function App() {
             <div className="notice error row align-center error-box">
               <AlertCircle size={20} />
               <div className="error-content">
-                <strong>去背處理失敗：</strong> {errorMsg}
+                <strong>Background removal failed:</strong> {errorMsg}
               </div>
               <button type="button" className="button subtle" onClick={handleReset}>
-                重試
+                Try again
               </button>
             </div>
           )}
 
           {/* Step 3: Editor & Comparison Preview */}
           {originalImage && !isLoading && (
-            <div className="editor-grid">
+            <div className="atelier-studio-shell">
+              <div className="studio-titlebar">
+                <div>
+                  <span className="atelier-eyebrow">STUDIO / READY</span>
+                  <h2>Make the final cut.</h2>
+                </div>
+                <div className="studio-titlebar-meta">
+                  <span className="studio-status-dot" />
+                  <span>{subjectLabel ? `Subject: ${subjectLabel}` : 'Subject detected'}</span>
+                </div>
+              </div>
+              <div className="editor-grid">
               {/* Left: Interactive Before/After Comparison Slider */}
               <div className="preview-panel">
                 <div className="panel-header-row">
                   <span className="panel-heading">
-                    <Layers size={16} /> 預設即時對比預覽
+                    <Layers size={16} /> Live comparison
                   </span>
                   <div className="panel-badges">
                     {subjectLabel && (
                       <span className="badge-subject">
-                        已辨識：{subjectLabel}
+                        Detected: {subjectLabel}
                       </span>
                     )}
                     <span className="badge-hint">
-                      <Keyboard size={12} /> 長按 Space 查看原圖
+                      <Keyboard size={12} /> Hold Space to view original
                     </span>
                   </div>
                 </div>
@@ -434,7 +424,7 @@ export function App() {
                   onPostProcessChange={setPostProcess}
                   onResetAll={() => {
                     setPostProcess(DEFAULT_POST_PROCESS);
-                    showToast('已重置後處理與調色', 'info');
+                    showToast('Effects and color adjustments reset', 'info');
                   }}
                 />
 
@@ -447,6 +437,7 @@ export function App() {
                   onReset={handleReset}
                   onShowToast={showToast}
                 />
+              </div>
               </div>
             </div>
           )}
@@ -461,7 +452,7 @@ export function App() {
       )}
 
       <footer className="app-footer">
-        <p>© 2026 Image Background Remover Tool — Powered by Cloudflare Workers & Manyfold AI</p>
+        <p>© 2026 Atelier — Powered by Cloudflare Workers & Manyfold AI</p>
       </footer>
     </div>
   );

@@ -71,7 +71,7 @@ export default function SettingsView(props: {
       setR2Status({ enabled: res.enabled, message: res.message });
     } catch (err) {
       console.error('Failed to list R2 items:', err);
-      setR2Status({ enabled: false, message: '無法載入 R2 儲存清單' });
+      setR2Status({ enabled: false, message: 'Unable to load the R2 storage list' });
     } finally {
       setLoadingR2(false);
     }
@@ -102,11 +102,11 @@ export default function SettingsView(props: {
       if (res.settings) {
         setSettings(res.settings);
       }
-      setNotice({ type: 'success', text: '設定檔已成功儲存並更新！' });
-      if (props.showToast) props.showToast('系統與工具設定已儲存', 'success');
+      setNotice({ type: 'success', text: 'Settings saved and updated.' });
+      if (props.showToast) props.showToast('System settings saved', 'success');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setNotice({ type: 'error', text: `儲存失敗: ${msg}` });
+      setNotice({ type: 'error', text: `Save failed: ${msg}` });
     } finally {
       setSavingSettings(false);
     }
@@ -118,10 +118,10 @@ export default function SettingsView(props: {
     try {
       await api(`/api/agents/${encodeURIComponent(agentId)}/verify`, { method: 'POST' });
       await props.refreshState();
-      if (props.showToast) props.showToast('Agent 驗證成功', 'success');
+      if (props.showToast) props.showToast('Agent verified', 'success');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setNotice({ type: 'error', text: `Agent 驗證失敗: ${msg}` });
+      setNotice({ type: 'error', text: `Agent verification failed: ${msg}` });
     } finally {
       setBusyAgentId(null);
     }
@@ -134,10 +134,10 @@ export default function SettingsView(props: {
       await api(`/api/agents/${encodeURIComponent(agentId)}`, { method: 'DELETE' });
       setConfirmAgentId(null);
       await props.refreshState();
-      if (props.showToast) props.showToast('已移除 Agent 連線', 'info');
+      if (props.showToast) props.showToast('Agent connection removed', 'info');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setNotice({ type: 'error', text: `斷開連線失敗: ${msg}` });
+      setNotice({ type: 'error', text: `Disconnect failed: ${msg}` });
     } finally {
       setBusyAgentId(null);
     }
@@ -147,10 +147,10 @@ export default function SettingsView(props: {
     try {
       await api(`/api/r2/${encodeURIComponent(key)}`, { method: 'DELETE' });
       setR2Items((prev) => prev.filter((item) => item.key !== key));
-      if (props.showToast) props.showToast('已從 R2 儲存區刪除圖片', 'info');
+      if (props.showToast) props.showToast('Image deleted from R2 storage', 'info');
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setNotice({ type: 'error', text: `刪除 R2 圖片失敗: ${msg}` });
+      setNotice({ type: 'error', text: `Unable to delete the R2 image: ${msg}` });
     }
   };
 
@@ -159,7 +159,7 @@ export default function SettingsView(props: {
     void navigator.clipboard.writeText(fullUrl);
     setCopiedKey(key);
     setTimeout(() => setCopiedKey(null), 2000);
-    if (props.showToast) props.showToast('圖片 URL 已複製到剪貼簿', 'success');
+    if (props.showToast) props.showToast('Image URL copied to clipboard', 'success');
   };
 
   const formatSize = (bytes: number) => {
@@ -178,18 +178,18 @@ export default function SettingsView(props: {
             className="button subtle btn-back"
             onClick={props.onBackToCanvas || (() => (window.location.href = '/'))}
           >
-            <ArrowLeft size={16} /> 返回去背畫布
+            <ArrowLeft size={16} /> Back to Studio
           </button>
           <div className="settings-heading-text">
             <span className="atelier-label">SYSTEM & SERVICE GOVERNANCE</span>
-            <h1 className="atelier-heading">系統與工具管理設定</h1>
+            <h1 className="atelier-heading">System settings</h1>
           </div>
         </div>
 
         <div className="settings-badge-status">
           <span className={`status-pill ${props.adminRequired ? 'protected' : 'open'}`}>
             <Lock size={12} />
-            {props.adminRequired ? '管理員權限控制中' : '開放部署模式'}
+            {props.adminRequired ? 'Admin access protected' : 'Open deployment mode'}
           </span>
         </div>
       </div>
@@ -208,7 +208,7 @@ export default function SettingsView(props: {
           onClick={() => setActiveTab('agents')}
         >
           <Bot size={18} />
-          <span>Manyfold Agent 授權 ({props.agents.length})</span>
+          <span>Manyfold Agent access ({props.agents.length})</span>
         </button>
 
         <button
@@ -217,7 +217,7 @@ export default function SettingsView(props: {
           onClick={() => setActiveTab('models')}
         >
           <Cpu size={18} />
-          <span>AI 去背與 Vision 模型</span>
+          <span>AI background removal & vision model</span>
         </button>
 
         <button
@@ -226,7 +226,7 @@ export default function SettingsView(props: {
           onClick={() => setActiveTab('r2')}
         >
           <HardDrive size={18} />
-          <span>Cloudflare R2 圖片庫 ({r2Items.length})</span>
+          <span>Cloudflare R2 image library ({r2Items.length})</span>
         </button>
 
         <button
@@ -235,7 +235,7 @@ export default function SettingsView(props: {
           onClick={() => setActiveTab('security')}
         >
           <ShieldCheck size={18} />
-          <span>安全性與診斷</span>
+          <span>Security & diagnostics</span>
         </button>
       </div>
 
@@ -245,14 +245,14 @@ export default function SettingsView(props: {
           <div className="panel-header">
             <h3>Connected Manyfold Agents</h3>
             <p className="muted">
-              管理已授權至此星系的 Manyfold AI Agent。可進行線上驗證、連線輪替與取消綁定。
+              Manage Manyfold AI Agents authorized for this workspace. Verify, rotate, or disconnect access.
             </p>
           </div>
 
           <div className="agent-list">
             {props.agents.length === 0 ? (
               <div className="empty-state">
-                <p className="muted">尚未連線任何 Manyfold Agent，請在下方開始 OAuth 授權。</p>
+                <p className="muted">No Manyfold Agent is connected. Start OAuth authorization below.</p>
               </div>
             ) : (
               props.agents.map((agent) => (
@@ -270,8 +270,8 @@ export default function SettingsView(props: {
                     </div>
                     {agent.description && <p className="muted">{agent.description}</p>}
                     <p className="muted small">
-                      {new URL(agent.rpcUrl).host} · 已連線 {new Date(agent.connectedAt).toLocaleString()}
-                      {agent.expiresAt ? ` · 授權到期 ${new Date(agent.expiresAt).toLocaleString()}` : ''}
+                      {new URL(agent.rpcUrl).host} · Connected {new Date(agent.connectedAt).toLocaleString()}
+                      {agent.expiresAt ? ` · Expires ${new Date(agent.expiresAt).toLocaleString()}` : ''}
                     </p>
                     {agent.warning && <p className="warn small">⚠ {agent.warning}</p>}
                   </div>
@@ -282,7 +282,7 @@ export default function SettingsView(props: {
                       onClick={() => void handleVerifyAgent(agent.agentId)}
                       disabled={busyAgentId === agent.agentId}
                     >
-                      {busyAgentId === agent.agentId ? '驗證中…' : '重新驗證'}
+                      {busyAgentId === agent.agentId ? 'Verifying…' : 'Verify again'}
                     </button>
                     {confirmAgentId === agent.agentId ? (
                       <span className="row">
@@ -292,14 +292,14 @@ export default function SettingsView(props: {
                           onClick={() => void handleDisconnectAgent(agent.agentId)}
                           disabled={busyAgentId === agent.agentId}
                         >
-                          確認中斷連線
+                          Confirm disconnect
                         </button>
                         <button
                           type="button"
                           className="button subtle"
                           onClick={() => setConfirmAgentId(null)}
                         >
-                          取消
+                          Cancel
                         </button>
                       </span>
                     ) : (
@@ -308,7 +308,7 @@ export default function SettingsView(props: {
                         className="button danger-outline"
                         onClick={() => setConfirmAgentId(agent.agentId)}
                       >
-                        中斷連線
+                        Disconnect
                       </button>
                     )}
                   </div>
@@ -318,9 +318,9 @@ export default function SettingsView(props: {
           </div>
 
           <div className="connect-section">
-            <h4>新增與整合 Manyfold Agent</h4>
+            <h4>Add and connect a Manyfold Agent</h4>
             <p className="muted">
-              透過安全 Popup 對 Manyfold 發起認證，完成後金鑰自動加密存放於 Cloudflare D1。
+              Authenticate with Manyfold in a secure popup. Credentials are encrypted and stored in Cloudflare D1.
             </p>
             <ConnectPanel initialSession={props.initialSession} onConnected={props.refreshState} />
           </div>
@@ -332,27 +332,27 @@ export default function SettingsView(props: {
         <section className="panel tab-panel">
           <form onSubmit={(e) => void handleSaveSettings(e)}>
             <div className="panel-header">
-              <h3>AI 去背服務與模型控管</h3>
-              <p className="muted">調整核心視覺模型的調用優先級、提示詞範本與計算上限。</p>
+              <h3>AI removal service & model controls</h3>
+              <p className="muted">Adjust the vision model priority, prompt template, and compute limits.</p>
             </div>
 
             <div className="form-grid">
               <div className="form-group">
-                <label className="form-label">主要去背模型 (Primary Model)</label>
+                <label className="form-label">Primary model</label>
                 <select
                   className="input-select"
                   value={settings.bgRemoveModel}
                   onChange={(e) => setSettings({ ...settings, bgRemoveModel: e.target.value })}
                 >
-                  <option value="gemini-3.6-flash">Gemini 3.6 Flash (預設推薦 — 高速高精準度)</option>
-                  <option value="gemini-3.5-pro">Gemini 3.5 Pro (細緻邊緣多重分析)</option>
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (極速輕量模式)</option>
+                  <option value="gemini-3.6-flash">Gemini 3.6 Flash (recommended)</option>
+                  <option value="gemini-3.5-pro">Gemini 3.5 Pro (fine edge analysis)</option>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (fast lightweight mode)</option>
                 </select>
-                <span className="form-hint">預設去背與輪廓分割所使用的 Gemini 視覺模型版本。</span>
+                <span className="form-hint">The Gemini vision model used for background removal and segmentation.</span>
               </div>
 
               <div className="form-group">
-                <label className="form-label">服務調用策略 (Delegation Mode)</label>
+                <label className="form-label">Service delegation mode</label>
                 <select
                   className="input-select"
                   value={settings.bgRemoveMode}
@@ -363,26 +363,26 @@ export default function SettingsView(props: {
                     })
                   }
                 >
-                  <option value="auto">自動委派 (優先 Manyfold Agent A2A，失敗時備援 Gemini API)</option>
-                  <option value="agent_only">僅限 Manyfold Agent (強迫使用 Agent 執行)</option>
-                  <option value="gemini_only">僅限 Direct Gemini API (直接調用 Gemini 3.6 Flash)</option>
+                  <option value="auto">Automatic (Manyfold Agent first, Gemini API fallback)</option>
+                  <option value="agent_only">Manyfold Agent only</option>
+                  <option value="gemini_only">Direct Gemini API only</option>
                 </select>
-                <span className="form-hint">控制請求處理的流轉路徑與降級機制。</span>
+                <span className="form-hint">Controls the request path and fallback behavior.</span>
               </div>
 
               <div className="form-group full-width">
-                <label className="form-label">Gemini Vision 去背 System Prompt</label>
+                <label className="form-label">Gemini Vision removal system prompt</label>
                 <textarea
                   className="input-textarea"
                   rows={4}
                   value={settings.geminiSystemPrompt}
                   onChange={(e) => setSettings({ ...settings, geminiSystemPrompt: e.target.value })}
                 />
-                <span className="form-hint">發送給 Gemini Vision API 的視覺輪廓提取指示詞。</span>
+                <span className="form-hint">Instructions sent to the Gemini Vision API for subject extraction.</span>
               </div>
 
               <div className="form-group">
-                <label className="form-label">最大影像分析尺寸 (Max Resolution px)</label>
+                <label className="form-label">Maximum image analysis size (px)</label>
                 <input
                   type="number"
                   className="input-text"
@@ -392,14 +392,14 @@ export default function SettingsView(props: {
                   max={4096}
                   step={256}
                 />
-                <span className="form-hint">輸入傳送給 AI Vision 分析前的尺寸上限。</span>
+                <span className="form-hint">The maximum size before the image is sent for AI vision analysis.</span>
               </div>
             </div>
 
             <div className="panel-actions">
               <button type="submit" className="button primary btn-save" disabled={savingSettings}>
                 {savingSettings ? <RefreshCw size={16} className="spinning" /> : <Save size={16} />}
-                {savingSettings ? '儲存中…' : '儲存模型設定'}
+                {savingSettings ? 'Saving…' : 'Save model settings'}
               </button>
             </div>
           </form>
@@ -411,9 +411,9 @@ export default function SettingsView(props: {
         <section className="panel tab-panel">
           <div className="panel-header row justify-between align-center">
             <div>
-              <h3>Cloudflare R2 圖片儲存庫</h3>
+              <h3>Cloudflare R2 image storage</h3>
               <p className="muted">
-                檢視與管理所有 AI 去背後自動備份儲存至 Cloudflare R2 Bucket (<code>{settings.r2BucketName}</code>) 的圖檔。
+                View and manage images automatically backed up to the Cloudflare R2 bucket (<code>{settings.r2BucketName}</code>).
               </p>
             </div>
             <button
@@ -423,7 +423,7 @@ export default function SettingsView(props: {
               disabled={loadingR2}
             >
               <RefreshCw size={14} className={loadingR2 ? 'spinning' : ''} />
-              重新整理
+              Refresh
             </button>
           </div>
 
@@ -431,8 +431,8 @@ export default function SettingsView(props: {
           <div className="r2-config-card">
             <div className="r2-toggle-row">
               <div>
-                <strong>自動儲存去背圖片至 R2 (R2 Storage Auto-Save)</strong>
-                <p className="muted small">開啟後每次去背產出的 PNG 圖片均會同步持久化存入 Cloudflare R2。</p>
+                <strong>Automatically save cutouts to R2</strong>
+                <p className="muted small">Each generated PNG is persisted to Cloudflare R2 when enabled.</p>
               </div>
               <label className="switch-toggle">
                 <input
@@ -447,7 +447,7 @@ export default function SettingsView(props: {
                       body: JSON.stringify(next),
                     });
                     if (props.showToast) {
-                      props.showToast(`R2 自動存圖已${e.target.checked ? '開啟' : '關閉'}`, 'info');
+                      props.showToast(`R2 auto-save ${e.target.checked ? 'enabled' : 'disabled'}`, 'info');
                     }
                   }}
                 />
@@ -457,7 +457,7 @@ export default function SettingsView(props: {
 
             {!r2Status.enabled && (
               <div className="notice warning row align-center margin-top-sm">
-                <span>⚠ Cloudflare R2 綁定狀態：{r2Status.message || '未偵測到 R2_IMAGE Binding'}</span>
+                <span>⚠ Cloudflare R2 binding: {r2Status.message || 'R2_IMAGE binding not detected'}</span>
               </div>
             )}
           </div>
@@ -467,7 +467,7 @@ export default function SettingsView(props: {
             {r2Items.length === 0 ? (
               <div className="empty-state">
                 <HardDrive size={32} className="muted" />
-                <p className="muted">R2 儲存庫中尚無照片。去背處理完成後圖片會自動出現在這裡。</p>
+                <p className="muted">No images in R2 yet. Completed cutouts will appear here automatically.</p>
               </div>
             ) : (
               r2Items.map((item) => (
@@ -477,7 +477,7 @@ export default function SettingsView(props: {
                   </div>
                   <div className="r2-card-body">
                     <div className="r2-card-title" title={item.key}>
-                      <strong>{item.customMetadata?.label || 'AI 去背圖檔'}</strong>
+                      <strong>{item.customMetadata?.label || 'AI cutout'}</strong>
                     </div>
                     <p className="r2-card-meta muted small">
                       {formatSize(item.size)} · {new Date(item.uploaded).toLocaleString()}
@@ -486,7 +486,7 @@ export default function SettingsView(props: {
                       <button
                         type="button"
                         className="button subtle icon-only"
-                        title="複製圖片 API 連結"
+                        title="Copy image API URL"
                         onClick={() => copyToClipboard(item.url, item.key)}
                       >
                         {copiedKey === item.key ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
@@ -496,14 +496,14 @@ export default function SettingsView(props: {
                         target="_blank"
                         rel="noreferrer"
                         className="button subtle icon-only"
-                        title="在新分頁開啟"
+                        title="Open in new tab"
                       >
                         <ExternalLink size={14} />
                       </a>
                       <button
                         type="button"
                         className="button danger-outline icon-only"
-                        title="刪除圖檔"
+                        title="Delete image"
                         onClick={() => void handleDeleteR2Item(item.key)}
                       >
                         <Trash2 size={14} />
@@ -521,24 +521,24 @@ export default function SettingsView(props: {
       {activeTab === 'security' && (
         <section className="panel tab-panel">
           <div className="panel-header">
-            <h3>安全性與系統資安診斷</h3>
-            <p className="muted">金鑰防護、存取密碼與 Cloudflare 資源整合狀態。</p>
+            <h3>Security & system diagnostics</h3>
+            <p className="muted">Key protection, access control, and Cloudflare resource status.</p>
           </div>
 
           <div className="security-grid">
             <div className="security-card">
               <div className="card-header-icon">
                 <Lock size={20} />
-                <h4>管理員密碼 (ADMIN_PASSWORD)</h4>
+                <h4>Admin password (ADMIN_PASSWORD)</h4>
               </div>
               <p className="muted small">
                 {props.adminRequired
-                  ? '已在 Cloudflare Secrets 設定 ADMIN_PASSWORD。只有驗證通過的管理員可以進入此 Settings 頁面。'
-                  : '目前未設定 ADMIN_PASSWORD，網站處於無密碼開放模式。如需專屬鎖定請在 Cloudflare 設定此秘密值。'}
+                  ? 'ADMIN_PASSWORD is configured in Cloudflare Secrets. Only verified admins can access Settings.'
+                  : 'ADMIN_PASSWORD is not configured. The site is open without a password. Add it in Cloudflare to lock access.'}
               </p>
               <div className="status-indicator">
                 <span className={`badge ${props.adminRequired ? 'ok' : 'warn'}`}>
-                  {props.adminRequired ? '已防護 (Locked)' : '開放部署 (Open)'}
+                  {props.adminRequired ? 'Protected (Locked)' : 'Open deployment'}
                 </span>
               </div>
             </div>
@@ -546,10 +546,10 @@ export default function SettingsView(props: {
             <div className="security-card">
               <div className="card-header-icon">
                 <Database size={20} />
-                <h4>Cloudflare D1 節點資料庫</h4>
+                <h4>Cloudflare D1 database</h4>
               </div>
               <p className="muted small">
-                Agent 加密金鑰、連線 Session 與聊天紀錄安全持久化儲存於 SQLite D1 Database。
+                Agent credentials, connection sessions, and chat history are persisted securely in SQLite D1.
               </p>
               <div className="status-indicator">
                 <span className="badge ok">D1 DB Online</span>
@@ -562,7 +562,7 @@ export default function SettingsView(props: {
                 <h4>Cloudflare R2 Bucket Binding</h4>
               </div>
               <p className="muted small">
-                圖片物件儲存 Binding (<code>R2_IMAGE</code>) 用於存放高解析度透明去背產圖。
+                The image object-storage binding (<code>R2_IMAGE</code>) stores high-resolution transparent cutouts.
               </p>
               <div className="status-indicator">
                 <span className={`badge ${r2Status.enabled ? 'ok' : 'warn'}`}>

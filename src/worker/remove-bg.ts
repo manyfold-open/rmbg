@@ -281,7 +281,7 @@ export function assertUsableCutout(base64Data: string, agentName: string): void 
     throw new HttpError(
       502,
       'agent_bad_image',
-      `Manyfold Agent ("${agentName}") 回傳的圖片資料無法解碼。`,
+      `Manyfold Agent ("${agentName}") returned image data that could not be decoded.`,
     );
   }
   assertUsableCutoutBytes(bytes, agentName);
@@ -295,8 +295,8 @@ export function assertUsableCutoutBytes(bytes: Uint8Array, agentName: string): v
     throw new HttpError(
       502,
       'agent_opaque_image',
-      `Manyfold Agent ("${agentName}") 回傳的是 JPEG。JPEG 沒有透明通道,不可能是去背結果,` +
-        `請輸出 PNG(RGBA)。`,
+      `Manyfold Agent ("${agentName}") returned a JPEG. JPEG has no alpha channel and cannot be a cutout, ` +
+        `so return a PNG (RGBA).`,
     );
   }
 
@@ -313,8 +313,8 @@ export function assertUsableCutoutBytes(bytes: Uint8Array, agentName: string): v
     throw new HttpError(
       502,
       'agent_placeholder_image',
-      `Manyfold Agent ("${agentName}") 回傳了佔位圖而非去背結果 (${detail})。` +
-        `這通常表示 Agent 沒有收到圖片,或它無法輸出圖片。`,
+      `Manyfold Agent ("${agentName}") returned a placeholder instead of a cutout (${detail}). ` +
+        `The Agent may not have received the image or may be unable to output an image.`,
     );
   }
 
@@ -322,8 +322,8 @@ export function assertUsableCutoutBytes(bytes: Uint8Array, agentName: string): v
     throw new HttpError(
       502,
       'agent_opaque_image',
-      `Manyfold Agent ("${agentName}") 回傳的 PNG 沒有透明通道,不算去背結果。` +
-        `影像模型無法直接輸出 alpha,常見的失敗是把「透明」畫成灰白格子圖案。`,
+      `Manyfold Agent ("${agentName}") returned a PNG without an alpha channel, so it is not a cutout. ` +
+        `A common failure is drawing a checkerboard instead of true transparency.`,
     );
   }
 }
@@ -421,7 +421,7 @@ async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Pro
         env,
         ticket.jobId,
         'progress',
-        `與 Agent 的連線中斷 (${streamError}),但 Agent 仍在背景執行,繼續等待它上傳結果。`,
+        `The Agent connection was interrupted (${streamError}), but the Agent is still running. Waiting for its upload.`,
       );
     }
 
@@ -434,7 +434,7 @@ async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Pro
         env,
         ticket.jobId,
         'progress',
-        `Agent 的回報中斷在「${snapshot.state}」,尚未結束工作,繼續等待它上傳結果。`,
+        `The Agent stopped reporting at "${snapshot.state}" but the job is still active. Waiting for its upload.`,
       );
     }
 
@@ -447,7 +447,7 @@ async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Pro
       const cutoutBase64 = bytesToBase64(bytes);
       assertUsableCutout(cutoutBase64, agentName);
 
-      await setJobNote(env, ticket.jobId, 'done', snapshot?.text || '去背完成。');
+      await setJobNote(env, ticket.jobId, 'done', snapshot?.text || 'Background removal complete.');
       void pruneJobTickets(env);
       return {
         label: agentName,
@@ -483,7 +483,7 @@ async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Pro
         r2Info = await saveImageToR2(env, cutoutDataUrl, finalMime, agentName);
       }
 
-      await setJobNote(env, ticket.jobId, 'done', snapshot.text || '去背完成。');
+      await setJobNote(env, ticket.jobId, 'done', snapshot.text || 'Background removal complete.');
       return {
         label: agentName,
         image: cutoutDataUrl,
@@ -500,9 +500,9 @@ async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Pro
     throw new HttpError(
       500,
       'agent_no_image',
-      `Manyfold Agent ("${agentName}") 沒有把結果上傳到 ${job.uploadUrl}。` +
-        (streamError ? `連線問題:${streamError}。` : '') +
-        `Agent 的回覆:${snapshot?.text || '(無回應文字)'}`,
+      `Manyfold Agent ("${agentName}") did not upload the result to ${job.uploadUrl}. ` +
+        (streamError ? `Connection issue: ${streamError}. ` : '') +
+        `Agent response: ${snapshot?.text || '(no text response)'}`,
     );
   } finally {
     clearTimeout(timer);
@@ -560,7 +560,7 @@ export async function handleRemoveBg(
           throw new HttpError(
             500,
             'r2_required',
-            'R2 bucket R2_IMAGE 未綁定。Agent 只能回文字,圖片要靠 R2 交接,所以這條路徑需要 R2。',
+            'R2 bucket R2_IMAGE is not bound. This path requires R2 because the Agent returns the image through storage.',
           );
         }
 
@@ -598,7 +598,7 @@ export async function handleRemoveBg(
             env,
             ticket.jobId,
             'progress',
-            `已把圖片交給 Manyfold Agent ("${selectedAgent.name}"),等待它去背並上傳結果。`,
+            `Image handed to Manyfold Agent ("${selectedAgent.name}"). Waiting for the cutout upload.`,
           );
           waitUntil(
             runAgentJob(job, ASYNC_UPLOAD_GRACE_MS, ASYNC_UPLOAD_POLL_MS).catch(
@@ -624,7 +624,7 @@ export async function handleRemoveBg(
         const message = err instanceof Error ? err.message : String(err);
         console.error('Manyfold A2A Error:', message);
         if (!apiKey || settings.bgRemoveMode === 'agent_only') {
-          throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") 處理失敗: ${message}`);
+          throw new HttpError(500, 'agent_error', `Manyfold Agent ("${selectedAgent.name}") failed: ${message}`);
         }
         console.warn('Falling back to direct Gemini API key legacy path after A2A failure.');
       }
@@ -688,6 +688,6 @@ Return a JSON object with the following schema:
   throw new HttpError(
     400,
     'no_auth_method',
-    '無可用的 AI 處理服務。請在 Cloudflare 設定 GEMINI_API_KEY，或在網站右上角點擊「Connect Manyfold Agent」授權您的 Agent！'
+    'No AI processing service is available. Configure GEMINI_API_KEY in Cloudflare or connect a Manyfold Agent in Settings.'
   );
 }

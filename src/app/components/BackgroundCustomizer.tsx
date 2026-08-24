@@ -22,22 +22,22 @@ interface BackgroundCustomizerProps {
 }
 
 const PRESET_COLORS = [
-  { name: '純白 Studio', hex: '#FFFFFF' },
-  { name: '亞麻暖色 Linen', hex: '#FAF8F5' },
-  { name: '柔灰霧質 Neutral', hex: '#EFECE6' },
-  { name: '赤陶琥珀 Terracotta', hex: '#C56A38' },
-  { name: '暖砂大地 Sand', hex: '#E3D5CA' },
-  { name: '鼠尾草綠 Sage', hex: '#D9E4DD' },
-  { name: '深炭黑色 Slate', hex: '#1F1D1B' },
-  { name: '莫蘭迪藍 Fog Blue', hex: '#D0D7DE' },
+  { name: 'Studio White', hex: '#FFFFFF' },
+  { name: 'Linen', hex: '#FAF8F5' },
+  { name: 'Neutral', hex: '#EFECE6' },
+  { name: 'Terracotta', hex: '#C56A38' },
+  { name: 'Sand', hex: '#E3D5CA' },
+  { name: 'Sage', hex: '#D9E4DD' },
+  { name: 'Slate', hex: '#1F1D1B' },
+  { name: 'Fog Blue', hex: '#D0D7DE' },
 ];
 
 const PRESET_FILTERS: { id: PresetFilter; name: string }[] = [
-  { id: 'none', name: '原色 Normal' },
-  { id: 'vintage', name: '復古底片 Vintage' },
-  { id: 'warm', name: '暖陽高光 Warm' },
-  { id: 'cool', name: '莫蘭迪冷 Cool' },
-  { id: 'mono', name: '極簡黑白 Mono' },
+  { id: 'none', name: 'Normal' },
+  { id: 'vintage', name: 'Vintage' },
+  { id: 'warm', name: 'Warm' },
+  { id: 'cool', name: 'Cool' },
+  { id: 'mono', name: 'Mono' },
 ];
 
 export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
@@ -84,15 +84,15 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
       <div className="panel-header-row">
         <h3 className="panel-title">
           <Layers size={18} />
-          Atelier Studio 畫布與後處理
+          Studio controls
         </h3>
         <button
           type="button"
           className="button subtle reset-subtle-btn"
           onClick={onResetAll}
-          title="重置所有調整"
+          title="Reset all adjustments"
         >
-          <RotateCcw size={14} /> 重置
+          <RotateCcw size={14} /> Reset
         </button>
       </div>
 
@@ -103,21 +103,21 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
           className={`sub-tab ${activeTab === 'bg' ? 'active' : ''}`}
           onClick={() => setActiveTab('bg')}
         >
-          <Layers size={14} /> 背景畫布
+          <Layers size={14} /> Background
         </button>
         <button
           type="button"
           className={`sub-tab ${activeTab === 'effects' ? 'active' : ''}`}
           onClick={() => setActiveTab('effects')}
         >
-          <Sun size={14} /> 陰影與位置
+          <Sun size={14} /> Shadow & position
         </button>
         <button
           type="button"
           className={`sub-tab ${activeTab === 'color' ? 'active' : ''}`}
           onClick={() => setActiveTab('color')}
         >
-          <Sliders size={14} /> 專業調色
+          <Sliders size={14} /> Color
         </button>
       </div>
 
@@ -131,7 +131,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
               onClick={() => setMode('transparent')}
             >
               <EyeOff size={16} />
-              透明背景
+              Transparent
             </button>
 
             <button
@@ -140,7 +140,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
               onClick={() => setMode('color')}
             >
               <Palette size={16} />
-              純色背景
+              Solid color
             </button>
 
             <button
@@ -149,7 +149,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
               onClick={() => setMode('image')}
             >
               <ImageIcon size={16} />
-              自訂圖片
+              Custom image
             </button>
 
             <button
@@ -158,19 +158,19 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
               onClick={() => setMode('blur')}
             >
               <Zap size={16} />
-              原圖模糊
+              Blur original
             </button>
           </div>
 
           {config.mode === 'transparent' && (
             <div className="bg-option-box">
-              <p className="small muted">預設透明 PNG 輸出，適合電商商品圖、大頭貼與設計素材。</p>
+              <p className="small muted">Transparent PNG output for product images, avatars, and design assets.</p>
             </div>
           )}
 
           {config.mode === 'color' && (
             <div className="bg-option-box">
-              <label className="small-label">常用預設色庫：</label>
+              <label className="small-label">Studio palette</label>
               <div className="color-swatches">
                 {PRESET_COLORS.map((c) => (
                   <button
@@ -183,7 +183,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
                   />
                 ))}
 
-                <div className="custom-color-picker" title="自訂顏色">
+                <div className="custom-color-picker" title="Custom color">
                   <input
                     type="color"
                     value={config.color}
@@ -211,7 +211,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Upload size={16} />
-                {config.customImageUrl ? '重新上傳背景圖片' : '選擇自訂背景圖'}
+                {config.customImageUrl ? 'Replace background image' : 'Choose background image'}
               </button>
             </div>
           )}
@@ -220,7 +220,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
             <div className="bg-option-box">
               <div className="slider-control">
                 <div className="slider-label-row">
-                  <span className="small-label">背景模糊強度 (Blur)</span>
+                  <span className="small-label">Background blur</span>
                   <span className="slider-val">{config.blurAmount}px</span>
                 </div>
                 <input
@@ -243,7 +243,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
         <div className="bg-option-box">
           {/* Shadow Toggle */}
           <div className="toggle-row">
-            <span className="small-label font-bold">主體落影 (Drop Shadow)</span>
+            <span className="small-label font-bold">Drop shadow</span>
             <button
               type="button"
               className={`toggle-switch ${postProcess.shadowEnable ? 'active' : ''}`}
@@ -257,7 +257,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
             <div className="nested-controls">
               <div className="slider-control">
                 <div className="slider-label-row">
-                  <span className="small-label">陰影羽化 (Blur)</span>
+                  <span className="small-label">Shadow blur</span>
                   <span className="slider-val">{postProcess.shadowBlur}px</span>
                 </div>
                 <input
@@ -271,7 +271,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
 
               <div className="slider-control">
                 <div className="slider-label-row">
-                  <span className="small-label">垂直偏移 (Offset Y)</span>
+                  <span className="small-label">Shadow offset</span>
                   <span className="slider-val">{postProcess.shadowOffsetY}px</span>
                 </div>
                 <input
@@ -290,7 +290,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
           {/* Scale & Position */}
           <div className="slider-control">
             <div className="slider-label-row">
-              <span className="small-label">主體縮放 (Scale)</span>
+              <span className="small-label">Subject scale</span>
               <span className="slider-val">{Math.round(postProcess.scale * 100)}%</span>
             </div>
             <input
@@ -305,7 +305,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
 
           <div className="slider-control">
             <div className="slider-label-row">
-              <span className="small-label">水平位移 (X Offset)</span>
+              <span className="small-label">Horizontal offset</span>
               <span className="slider-val">{postProcess.positionX}%</span>
             </div>
             <input
@@ -319,7 +319,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
 
           <div className="slider-control">
             <div className="slider-label-row">
-              <span className="small-label">垂直位移 (Y Offset)</span>
+              <span className="small-label">Vertical offset</span>
               <span className="slider-val">{postProcess.positionY}%</span>
             </div>
             <input
@@ -336,7 +336,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
       {/* TAB 3: Color Grading & Preset Filters */}
       {activeTab === 'color' && (
         <div className="bg-option-box">
-          <label className="small-label">藝術濾鏡風格：</label>
+          <label className="small-label">Filter presets</label>
           <div className="filter-presets-grid">
             {PRESET_FILTERS.map((pf) => (
               <button
@@ -354,7 +354,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
 
           <div className="slider-control">
             <div className="slider-label-row">
-              <span className="small-label">亮度 (Brightness)</span>
+              <span className="small-label">Brightness</span>
               <span className="slider-val">{postProcess.brightness}%</span>
             </div>
             <input
@@ -368,7 +368,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
 
           <div className="slider-control">
             <div className="slider-label-row">
-              <span className="small-label">對比度 (Contrast)</span>
+              <span className="small-label">Contrast</span>
               <span className="slider-val">{postProcess.contrast}%</span>
             </div>
             <input
@@ -382,7 +382,7 @@ export const BackgroundCustomizer: React.FC<BackgroundCustomizerProps> = ({
 
           <div className="slider-control">
             <div className="slider-label-row">
-              <span className="small-label">飽和度 (Saturation)</span>
+              <span className="small-label">Saturation</span>
               <span className="slider-val">{postProcess.saturation}%</span>
             </div>
             <input
