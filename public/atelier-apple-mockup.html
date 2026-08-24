@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Atelier — Apple-inspired background remover mockup</title>
+    <link rel="icon" type="image/png" href="atelier-icon.png" />
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+      :root {
+        --ink: #1d1d1f;
+        --muted: #6e6e73;
+        --muted-2: #86868b;
+        --blue: #0066cc;
+        --blue-focus: #0071e3;
+        --paper: #ffffff;
+        --white: #ffffff;
+        --pearl: #fafafc;
+        --dark: #272729;
+        --dark-2: #2a2a2c;
+        --line: rgba(0, 0, 0, 0.09);
+        --line-dark: rgba(255, 255, 255, 0.13);
+        --radius-sm: 8px;
+        --radius-md: 11px;
+        --radius-lg: 18px;
+        --pill: 999px;
+        --product-shadow: 3px 5px 30px rgba(0, 0, 0, 0.22);
+        --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", system-ui, sans-serif;
+        --text: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      html { scroll-behavior: smooth; }
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--white);
+        font-family: var(--text);
+        font-size: 17px;
+        line-height: 1.47;
+        letter-spacing: -0.01em;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button, input { font: inherit; }
+      button { cursor: pointer; appearance: none; -webkit-appearance: none; }
+      button:focus-visible, input:focus-visible, [tabindex]:focus-visible {
+        outline: 2px solid var(--blue-focus);
+        outline-offset: 3px;
+      }
+      ::selection { color: #fff; background: var(--blue); }
+      *::-webkit-scrollbar { width: 10px; height: 10px; }
+      *::-webkit-scrollbar-track { background: var(--paper); }
+      *::-webkit-scrollbar-thumb { border: 3px solid var(--paper); border-radius: 999px; background: #b8b8be; }
+      *::-webkit-scrollbar-thumb:hover { background: #86868b; }
+
+      .global-nav {
+        height: 44px;
+        padding: 0 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        color: #fff;
+        background: #000;
+        font-size: 12px;
+      }
+
+      .global-left, .global-right, .global-links {
+        display: flex;
+        align-items: center;
+      }
+
+      .global-left { gap: 28px; }
+      .global-right { gap: 18px; color: #b9b9bd; }
+      .global-links { gap: 22px; color: #b9b9bd; }
+      .global-links button, .global-right button {
+        border: 0;
+        padding: 0;
+        color: inherit;
+        background: transparent;
+        font-size: 12px;
+      }
+      .global-links button:hover, .global-right button:hover { color: #fff; }
+
+      .wordmark {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: #fff;
+        font-family: var(--display);
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+      .wordmark-mark {
+        width: 20px;
+        height: 20px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        color: #000;
+        background: #fff;
+        font-size: 12px;
+      }
+      .wordmark-mark img { width: 100%; height: 100%; display: block; border-radius: inherit; object-fit: cover; }
+
+      .sub-nav {
+        position: sticky;
+        top: 0;
+        z-index: 20;
+        height: 54px;
+        padding: 0 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--line);
+        background: rgba(245, 245, 247, 0.82);
+        backdrop-filter: saturate(180%) blur(20px);
+        -webkit-backdrop-filter: saturate(180%) blur(20px);
+      }
+      .sub-nav-title {
+        font-family: var(--display);
+        font-size: 21px;
+        font-weight: 600;
+        letter-spacing: -0.02em;
+      }
+      .sub-nav-right { display: flex; align-items: center; gap: 22px; }
+      .sub-nav-right a {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 14px;
+      }
+      .sub-nav-right a:hover { color: var(--ink); }
+
+      .button {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 10px 20px;
+        border: 1px solid transparent;
+        border-radius: var(--pill);
+        white-space: nowrap;
+        transition: transform .12s ease, background-color .16s ease, border-color .16s ease;
+      }
+      .button:active { transform: scale(.95); }
+      .button-primary { color: #fff; background: var(--blue); }
+      .button-primary:hover { background: var(--blue-focus); }
+      .button-ghost { color: var(--blue); background: transparent; border-color: var(--blue); }
+      .button-ghost:hover { color: var(--blue-focus); border-color: var(--blue-focus); }
+      .button-dark { color: #fff; background: var(--ink); }
+      .button-dark:hover { background: #000; }
+      .button-small { min-height: 36px; padding: 7px 14px; font-size: 14px; }
+
+      .page { overflow: hidden; }
+      .container { width: min(1180px, calc(100% - 48px)); margin: 0 auto; }
+
+      .hero {
+        min-height: 100svh;
+        display: grid;
+        align-items: center;
+        padding: 84px 0 92px;
+        background: var(--white);
+      }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: 1fr 0.9fr;
+        gap: 72px;
+        align-items: center;
+      }
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 22px;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 600;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+      }
+      .eyebrow-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--blue);
+      }
+      h1, h2, h3, p { margin-top: 0; }
+      .hero h1 {
+        max-width: 620px;
+        margin-bottom: 22px;
+        font-family: var(--display);
+        font-size: clamp(48px, 6vw, 72px);
+        font-weight: 600;
+        line-height: 1.02;
+        letter-spacing: -0.055em;
+      }
+      .hero-copy {
+        max-width: 470px;
+        margin-bottom: 32px;
+        color: var(--muted);
+        font-size: 21px;
+        line-height: 1.35;
+      }
+      .hero-actions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+      .hero-note { margin: 18px 0 0; color: var(--muted-2); font-size: 12px; }
+
+      .hero-specs {
+        display: flex;
+        gap: 24px;
+        margin-top: 42px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+      }
+      .hero-spec { display: flex; flex-direction: column; gap: 2px; }
+      .hero-spec strong { font-family: var(--display); font-size: 15px; font-weight: 600; }
+      .hero-spec span { color: var(--muted-2); font-size: 11px; }
+
+      .upload-card {
+        padding: 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--paper);
+      }
+      .upload-inner {
+        min-height: 330px;
+        padding: 34px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        border: 1px dashed #b7b7bd;
+        border-radius: var(--radius-md);
+        transition: background .16s ease, border-color .16s ease;
+      }
+      .upload-inner.dragging, .upload-inner:hover {
+        border-color: var(--blue);
+        background: #eef6ff;
+      }
+      .upload-icon {
+        width: 58px;
+        height: 58px;
+        display: grid;
+        place-items: center;
+        margin-bottom: 20px;
+        border-radius: 50%;
+        color: var(--blue);
+        background: #e8f2ff;
+      }
+      .upload-title { margin-bottom: 8px; font-size: 21px; font-weight: 600; }
+      .upload-subtitle { margin-bottom: 22px; color: var(--muted); font-size: 14px; }
+      .upload-meta { margin-top: 16px; color: var(--muted-2); font-size: 12px; }
+
+      .section-heading {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 24px;
+      }
+      .section-kicker { margin-bottom: 8px; color: var(--blue); font-size: 12px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+      .section-heading h2 { margin-bottom: 0; font-family: var(--display); font-size: 34px; line-height: 1.1; letter-spacing: -0.035em; }
+      .section-heading p { max-width: 420px; margin-bottom: 0; color: var(--muted); font-size: 14px; }
+
+      .studio-section { padding: 82px 0 120px; background: var(--white); }
+      .studio-section[hidden], .processing-section[hidden] { display: none !important; }
+      .studio-section { color: var(--ink); background: var(--white); }
+      .studio-section .section-heading h2 { color: var(--ink); }
+      .studio-section .section-heading p { color: var(--muted); }
+
+      .processing-section {
+        min-height: 100svh;
+        padding: 110px 0;
+        color: var(--ink);
+        background: var(--white);
+      }
+      .processing-shell {
+        min-height: 520px;
+        display: grid;
+        place-items: center;
+        text-align: center;
+      }
+      .processing-inner { width: min(620px, 100%); }
+      .processing-mark {
+        width: 72px;
+        height: 72px;
+        display: grid;
+        place-items: center;
+        margin: 0 auto 30px;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        color: var(--blue);
+        background: var(--white);
+      }
+      .processing-kicker { margin-bottom: 18px; color: #2997ff; font-size: 12px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+      .processing-title { margin-bottom: 14px; font-family: var(--display); font-size: clamp(36px, 5vw, 56px); font-weight: 600; line-height: 1.04; letter-spacing: -.045em; }
+      .processing-copy { margin: 0 auto 34px; color: var(--muted); font-size: 17px; }
+      .progress-wrap { max-width: 460px; margin: 0 auto; text-align: left; }
+      .progress-meta { display: flex; justify-content: space-between; margin-bottom: 9px; color: var(--muted); font-size: 12px; }
+      .progress-track { height: 3px; overflow: hidden; border-radius: 999px; background: #d2d2d7; }
+      .progress-fill { width: 68%; height: 100%; border-radius: inherit; background: var(--blue); animation: progress 1.4s ease-in-out infinite alternate; }
+      @keyframes progress { from { width: 42%; } to { width: 84%; } }
+      .processing-footnote { margin-top: 26px; color: #6e6e73; font-size: 12px; }
+      .studio-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        gap: 24px;
+        align-items: start;
+      }
+
+      .canvas-panel {
+        min-height: 690px;
+        padding: 24px;
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        background: var(--white);
+        border: 1px solid var(--line);
+      }
+      .canvas-topline { display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px; }
+      .canvas-title { display: flex; align-items: center; gap: 9px; font-size: 14px; font-weight: 600; }
+      .canvas-status { display: inline-flex; align-items: center; gap: 7px; color: var(--blue); font-size: 12px; }
+      .status-dot { width: 7px; height: 7px; border-radius: 50%; background: #42a5ff; }
+      .preview {
+        position: relative;
+        min-height: 560px;
+        display: grid;
+        place-items: center;
+        overflow: hidden;
+        border-radius: var(--radius-md);
+        background-color: #fff;
+        background-image:
+          linear-gradient(45deg, #ededed 25%, transparent 25%),
+          linear-gradient(-45deg, #ededed 25%, transparent 25%),
+          linear-gradient(45deg, transparent 75%, #ededed 75%),
+          linear-gradient(-45deg, transparent 75%, #ededed 75%);
+        background-size: 24px 24px;
+        background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+      }
+      .preview-surface {
+        position: absolute;
+        inset: 0;
+        background: #ffffff;
+        clip-path: inset(0 0 0 50%);
+      }
+      .preview-image {
+        position: absolute;
+        width: min(54%, 360px);
+        height: 78%;
+        object-fit: cover;
+        object-position: center;
+        border-radius: 12px;
+        box-shadow: var(--product-shadow);
+      }
+      .preview-image.result { mix-blend-mode: multiply; clip-path: inset(0 0 0 50%); }
+      .preview-divider {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 50%;
+        width: 2px;
+        background: #fff;
+        box-shadow: 0 0 0 1px rgba(0,0,0,.06);
+        z-index: 2;
+      }
+      .preview-handle {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        z-index: 3;
+        width: 42px;
+        height: 42px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 50%;
+        color: var(--blue);
+        background: #fff;
+        box-shadow: 0 2px 8px rgba(0,0,0,.25);
+        transform: translate(-50%, -50%);
+      }
+      .preview-label {
+        position: absolute;
+        top: 16px;
+        z-index: 4;
+        padding: 6px 11px;
+        border-radius: var(--pill);
+        color: #fff;
+        background: rgba(0,0,0,.58);
+        backdrop-filter: blur(12px);
+        font-size: 12px;
+      }
+      .preview-label.before { left: 16px; }
+      .preview-label.after { right: 16px; }
+      .preview-caption { position: absolute; bottom: 16px; left: 18px; color: #6e6e73; font-size: 12px; }
+
+      .control-panel {
+        padding: 24px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        background: var(--white);
+      }
+      .control-header { display: flex; align-items: start; justify-content: space-between; gap: 18px; margin-bottom: 24px; }
+      .control-header h3 { margin-bottom: 5px; font-family: var(--display); font-size: 21px; letter-spacing: -0.025em; }
+      .control-header p { margin-bottom: 0; color: var(--muted); font-size: 13px; }
+      .ai-badge { padding: 5px 9px; border-radius: var(--pill); color: var(--blue); background: #eef6ff; font-size: 11px; font-weight: 600; white-space: nowrap; }
+      .tabs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px; margin-bottom: 24px; border-radius: var(--pill); background: var(--paper); }
+      .tab { border: 0; padding: 9px 4px; border-radius: var(--pill); color: var(--muted); background: transparent; font-size: 12px; }
+      .tab.active { color: var(--blue); background: var(--white); }
+      .control-group { padding: 18px 0; border-top: 1px solid var(--line); }
+      .control-group:first-of-type { padding-top: 0; border-top: 0; }
+      .control-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; font-size: 13px; font-weight: 600; }
+      .control-label span:last-child { color: var(--blue); font-size: 12px; font-weight: 400; }
+      .swatches { display: flex; gap: 10px; flex-wrap: wrap; }
+      .swatch { width: 30px; height: 30px; border: 1px solid var(--line); border-radius: 50%; }
+      .swatch.active { box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--blue); }
+      .range {
+        width: 100%;
+        height: 24px;
+        margin: 0;
+        padding: 0;
+        appearance: none;
+        -webkit-appearance: none;
+        cursor: pointer;
+        background: transparent;
+      }
+      .range::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: #d2d2d7; }
+      .range::-webkit-slider-thumb {
+        width: 20px;
+        height: 20px;
+        margin-top: -8px;
+        appearance: none;
+        -webkit-appearance: none;
+        border: 3px solid #fff;
+        border-radius: 50%;
+        background: var(--blue);
+        box-shadow: 0 0 0 1px rgba(0,0,0,.12), 0 2px 5px rgba(0,0,0,.18);
+      }
+      .range::-moz-range-track { height: 4px; border-radius: 999px; background: #d2d2d7; }
+      .range::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--blue); }
+      .range::-moz-range-thumb { width: 14px; height: 14px; border: 3px solid #fff; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 1px rgba(0,0,0,.12), 0 2px 5px rgba(0,0,0,.18); }
+      .range:focus-visible { outline: 0; }
+      .range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px rgba(0,113,227,.24), 0 0 0 1px rgba(0,0,0,.12), 0 2px 5px rgba(0,0,0,.18); }
+      .option-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+      .option-row strong { display: block; margin-bottom: 3px; font-size: 13px; }
+      .option-row small { color: var(--muted); font-size: 12px; }
+      .toggle { width: 44px; height: 26px; padding: 2px; border: 0; border-radius: var(--pill); background: #d2d2d7; }
+      .toggle span { display: block; width: 22px; height: 22px; border-radius: 50%; background: #fff; transition: transform .16s ease; }
+      .toggle.on { background: var(--blue); }
+      .toggle.on span { transform: translateX(18px); }
+      .panel-link { display: inline-flex; align-items: center; gap: 5px; margin-top: 8px; color: var(--blue); font-size: 13px; text-decoration: none; }
+
+      .export-bar {
+        position: sticky;
+        bottom: 18px;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        margin-top: 24px;
+        padding: 14px 18px 14px 22px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-lg);
+        color: var(--ink);
+        border-color: var(--line);
+        background: rgba(255,255,255,.88);
+        backdrop-filter: saturate(180%) blur(20px);
+        -webkit-backdrop-filter: saturate(180%) blur(20px);
+      }
+      .export-summary { display: flex; align-items: center; gap: 12px; }
+      .export-thumb { width: 40px; height: 40px; border-radius: 9px; object-fit: cover; }
+      .export-summary strong { display: block; font-size: 13px; }
+      .export-summary span { color: var(--muted); font-size: 12px; }
+      .export-actions { display: flex; gap: 10px; }
+
+      .footer { padding: 56px 0; color: #333; background: var(--paper); border-top: 1px solid var(--line); }
+      .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+      .footer p { margin: 0; color: var(--muted); font-size: 12px; }
+      .footer a { color: var(--blue); font-size: 12px; text-decoration: none; }
+
+      .toast {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 50;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        max-width: min(360px, calc(100vw - 32px));
+        padding: 12px 16px;
+        border-radius: var(--pill);
+        color: #fff;
+        background: rgba(29,29,31,.92);
+        box-shadow: 0 8px 30px rgba(0,0,0,.22);
+        font-size: 13px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(8px);
+        transition: opacity .18s ease, transform .18s ease;
+      }
+      .toast.show { opacity: 1; transform: translateY(0); }
+
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+      }
+
+      @media (max-width: 900px) {
+        .hero-grid, .studio-grid { grid-template-columns: 1fr; }
+        .hero-grid { gap: 42px; }
+        .control-panel { order: 2; }
+        .canvas-panel { min-height: 560px; }
+        .preview { min-height: 470px; }
+        .global-links { display: none; }
+      }
+      @media (max-width: 560px) {
+        .global-nav, .sub-nav { padding: 0 16px; }
+        .global-right { gap: 10px; }
+        .sub-nav-right a { display: none; }
+        .container { width: min(100% - 32px, 1180px); }
+        .hero { min-height: 100svh; padding: 58px 0 68px; }
+        .hero h1 { font-size: 46px; }
+        .hero-copy { font-size: 18px; }
+        .hero-specs { gap: 16px; margin-top: 30px; }
+        .upload-inner { min-height: 270px; padding: 24px; }
+        .studio-section { padding: 62px 0 88px; }
+        .canvas-panel, .control-panel { padding: 16px; }
+        .canvas-panel { min-height: 440px; }
+        .preview { min-height: 380px; }
+        .preview-image { width: 58%; height: 72%; }
+        .export-bar { align-items: stretch; flex-direction: column; bottom: 10px; }
+        .export-actions { display: grid; grid-template-columns: 1fr 1fr; }
+        .export-actions .button { width: 100%; }
+        .footer-inner { align-items: flex-start; flex-direction: column; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page" id="top">
+      <main>
+        <section class="hero" id="empty-state" aria-labelledby="hero-title">
+          <div class="container hero-grid">
+            <div>
+              <div class="eyebrow"><span class="eyebrow-dot"></span> AI image studio</div>
+              <h1 id="hero-title">Keep the subject.<br />Lose the noise.</h1>
+              <p class="hero-copy">Remove backgrounds with precision and keep what matters. A quieter workspace for products, portraits, and creative assets.</p>
+              <div class="hero-actions">
+                <button class="button button-primary" type="button" id="hero-upload"><i data-lucide="upload" width="17" height="17"></i> Upload image</button>
+                <button class="button button-ghost" type="button" data-action="sample">View sample <i data-lucide="arrow-down-right" width="16" height="16"></i></button>
+              </div>
+              <p class="hero-note">PNG, JPG, WEBP · up to 15 MB · Powered by Manyfold AI</p>
+              <div class="hero-specs" aria-label="Studio capabilities">
+                <div class="hero-spec"><strong>01</strong><span>Detect subject</span></div>
+                <div class="hero-spec"><strong>02</strong><span>Remove background</span></div>
+                <div class="hero-spec"><strong>03</strong><span>Export cleanly</span></div>
+              </div>
+            </div>
+
+            <div class="upload-card">
+              <div class="upload-inner" id="dropzone" tabindex="0" role="button" aria-label="Upload an image">
+                <input id="file-input" type="file" accept="image/png,image/jpeg,image/webp" hidden />
+                <div class="upload-icon"><i data-lucide="image-plus" width="26" height="26"></i></div>
+                <div class="upload-title">Drop your image here</div>
+                <div class="upload-subtitle">or choose an image to begin</div>
+                <button class="button button-dark button-small" type="button" id="choose-file"><i data-lucide="folder-open" width="15" height="15"></i> Choose file</button>
+                <div class="upload-meta" id="upload-meta">Demo image ready · 4:3 canvas</div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="processing-section" id="processing-state" hidden aria-labelledby="processing-title">
+          <div class="container processing-shell">
+            <div class="processing-inner">
+              <div class="processing-mark"><i data-lucide="scan-search" width="30" height="30"></i></div>
+              <div class="processing-kicker">Atelier intelligence / active</div>
+              <h2 class="processing-title" id="processing-title">Finding what matters.</h2>
+              <p class="processing-copy">Analysing subject contours, edges, and transparency. Studio will open when your image is ready.</p>
+              <div class="progress-wrap">
+                <div class="progress-meta"><span>Removing background</span><span>68%</span></div>
+                <div class="progress-track"><div class="progress-fill"></div></div>
+              </div>
+              <div class="processing-footnote">Manyfold AI · Secure image pipeline</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="studio-section" id="studio" hidden aria-labelledby="studio-title">
+          <div class="container">
+            <div class="section-heading">
+              <div>
+                <div class="section-kicker">Studio / ready</div>
+                <h2 id="studio-title">Your image, in focus.</h2>
+              </div>
+              <div style="display:flex;align-items:center;gap:16px;">
+                <p>The image is the hero. Controls stay quiet until you need them.</p>
+                <button class="button button-ghost button-small" id="reset-studio" type="button"><i data-lucide="plus" width="15" height="15"></i> New image</button>
+              </div>
+            </div>
+
+            <div class="studio-grid">
+              <section class="canvas-panel" aria-label="Image comparison preview">
+                <div class="canvas-topline">
+                  <div class="canvas-title"><i data-lucide="scan-line" width="16" height="16"></i> Live comparison</div>
+                  <div class="canvas-status"><span class="status-dot"></span> Background removed</div>
+                </div>
+                <div class="preview" id="preview">
+                  <div class="preview-surface"></div>
+                  <img class="preview-image original" id="original-image" src="https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=900&q=88" alt="Demo portrait original" />
+                  <img class="preview-image result" id="result-image" src="https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=900&q=88" alt="Demo portrait background removed" />
+                  <div class="preview-divider" id="preview-divider"></div>
+                  <button class="preview-handle" id="preview-handle" type="button" aria-label="Drag to compare"><i data-lucide="chevrons-left-right" width="18" height="18"></i></button>
+                  <div class="preview-label before">Original</div>
+                  <div class="preview-label after">Cutout</div>
+                  <div class="preview-caption">Hold and drag to compare</div>
+                </div>
+              </section>
+
+              <aside class="control-panel" aria-label="Image controls">
+                <div class="control-header">
+                  <div>
+                    <h3>Refine your cutout</h3>
+                    <p>Small controls. Clear outcomes.</p>
+                  </div>
+                  <span class="ai-badge">AI ready</span>
+                </div>
+
+                <div class="tabs" role="tablist">
+                  <button class="tab active" type="button" role="tab" aria-selected="true" data-tab="background">Background</button>
+                  <button class="tab" type="button" role="tab" aria-selected="false" data-tab="effects">Effects</button>
+                  <button class="tab" type="button" role="tab" aria-selected="false" data-tab="color">Color</button>
+                </div>
+
+                <div id="background-pane" class="tab-pane">
+                  <div class="control-group">
+                    <div class="control-label"><span>Canvas</span><span>Transparent</span></div>
+                    <div class="swatches">
+                      <button class="swatch active" type="button" style="background: repeating-conic-gradient(#e7e7e7 0 25%, #fff 0 50%) 50% / 12px 12px" aria-label="Transparent canvas"></button>
+                      <button class="swatch" type="button" style="background:#fff" aria-label="White canvas"></button>
+                      <button class="swatch" type="button" style="background:#f5f5f7" aria-label="Parchment canvas"></button>
+                      <button class="swatch" type="button" style="background:#272729" aria-label="Dark canvas"></button>
+                    </div>
+                  </div>
+                  <div class="control-group">
+                    <div class="option-row">
+                      <div><strong>Use original as blur</strong><small>Keep the subject grounded.</small></div>
+                      <button class="toggle on" type="button" aria-label="Toggle blur" aria-pressed="true"><span></span></button>
+                    </div>
+                  </div>
+                  <div class="control-group">
+                    <div class="control-label"><span>Blur intensity</span><span id="blur-value">18 px</span></div>
+                    <input class="range" id="blur-range" type="range" min="0" max="40" value="18" />
+                  </div>
+                </div>
+
+                <div id="effects-pane" class="tab-pane" hidden>
+                  <div class="control-group">
+                    <div class="option-row"><div><strong>Product shadow</strong><small>One soft shadow for depth.</small></div><button class="toggle on" type="button" aria-label="Toggle product shadow" aria-pressed="true"><span></span></button></div>
+                  </div>
+                  <div class="control-group"><div class="control-label"><span>Scale</span><span>100%</span></div><input class="range" type="range" min="60" max="140" value="100" /></div>
+                  <div class="control-group"><div class="control-label"><span>Position</span><span>Centered</span></div><a class="panel-link" href="#studio" data-toast="Subject position reset.">Reset position <i data-lucide="rotate-ccw" width="14" height="14"></i></a></div>
+                </div>
+
+                <div id="color-pane" class="tab-pane" hidden>
+                  <div class="control-group"><div class="control-label"><span>Preset</span><span>Normal</span></div><div class="swatches"><button class="swatch active" type="button" style="background:linear-gradient(135deg,#f6d8c5,#6686a8)" aria-label="Normal"></button><button class="swatch" type="button" style="background:linear-gradient(135deg,#d8b08a,#6f4939)" aria-label="Warm"></button><button class="swatch" type="button" style="background:linear-gradient(135deg,#d5dbe4,#3c4b5e)" aria-label="Cool"></button><button class="swatch" type="button" style="background:#222" aria-label="Mono"></button></div></div>
+                  <div class="control-group"><div class="control-label"><span>Brightness</span><span>100%</span></div><input class="range" type="range" min="50" max="150" value="100" /></div>
+                  <div class="control-group"><div class="control-label"><span>Contrast</span><span>100%</span></div><input class="range" type="range" min="50" max="150" value="100" /></div>
+                </div>
+
+                <a href="#top" class="panel-link" data-toast="Background presets are ready to use.">Explore more presets <i data-lucide="arrow-up-right" width="14" height="14"></i></a>
+              </aside>
+            </div>
+
+            <div class="export-bar">
+              <div class="export-summary">
+                <img class="export-thumb" id="export-thumb" src="https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=140&q=80" alt="Selected image thumbnail" />
+                <div><strong id="export-name">portrait-study.png</strong><span>Transparent PNG · High resolution</span></div>
+              </div>
+              <div class="export-actions">
+                <button class="button button-ghost button-small" type="button" data-toast="A transparent PNG and white-background PNG will be prepared."><i data-lucide="layers-2" width="15" height="15"></i> Export bundle</button>
+                <button class="button button-primary button-small" type="button" id="download-button"><i data-lucide="download" width="15" height="15"></i> Download PNG</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <div class="container footer-inner">
+          <p>© 2026 Atelier Studio · Powered by Cloudflare Workers & Manyfold AI</p>
+          <a href="#top">Back to top ↑</a>
+        </div>
+      </footer>
+    </div>
+
+    <div class="toast" id="toast" role="status"><i data-lucide="check" width="16" height="16"></i><span id="toast-text">Done</span></div>
+
+    <script>
+      lucide.createIcons();
+
+      const $ = (selector) => document.querySelector(selector);
+      const $$ = (selector) => [...document.querySelectorAll(selector)];
+      const toast = (message) => {
+        $('#toast-text').textContent = message;
+        $('#toast').classList.add('show');
+        window.clearTimeout(window.__toastTimer);
+        window.__toastTimer = window.setTimeout(() => $('#toast').classList.remove('show'), 2400);
+      };
+
+      $$('[data-toast]').forEach((button) => button.addEventListener('click', (event) => {
+        event.preventDefault();
+        toast(button.dataset.toast);
+      }));
+
+      $$('[data-scroll]').forEach((button) => button.addEventListener('click', () => {
+        if (button.dataset.scroll === 'studio') return startSample();
+        document.querySelector('#top').scrollIntoView({ behavior: 'smooth' });
+      }));
+
+      $$('[data-action="sample"]').forEach((button) => button.addEventListener('click', startSample));
+
+      const fileInput = $('#file-input');
+      const dropzone = $('#dropzone');
+      const chooseFile = () => fileInput.click();
+      $('#hero-upload').addEventListener('click', chooseFile);
+      $('#choose-file').addEventListener('click', (event) => { event.stopPropagation(); chooseFile(); });
+      dropzone.addEventListener('click', chooseFile);
+      dropzone.addEventListener('keydown', (event) => { if (event.key === 'Enter' || event.key === ' ') chooseFile(); });
+      ['dragenter', 'dragover'].forEach((name) => dropzone.addEventListener(name, (event) => { event.preventDefault(); dropzone.classList.add('dragging'); }));
+      ['dragleave', 'drop'].forEach((name) => dropzone.addEventListener(name, (event) => { event.preventDefault(); dropzone.classList.remove('dragging'); }));
+      dropzone.addEventListener('drop', (event) => { const file = event.dataTransfer.files[0]; if (file) loadFile(file); });
+      fileInput.addEventListener('change', () => { if (fileInput.files[0]) loadFile(fileInput.files[0]); });
+
+      function loadFile(file) {
+        if (!file.type.startsWith('image/')) return toast('Please choose a PNG, JPG or WEBP image.');
+        const url = URL.createObjectURL(file);
+        transitionToStudio(url, file.name, `${file.name} · ready for AI removal`);
+      }
+
+      const demoUrl = 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=900&q=88';
+      function startSample() {
+        transitionToStudio(demoUrl, 'portrait-study.png', 'Demo image ready · 4:3 canvas');
+      }
+
+      function transitionToStudio(url, name, meta) {
+        $('#empty-state').hidden = true;
+        $('#studio').hidden = true;
+        $('#processing-state').hidden = false;
+        $('#original-image').src = url;
+        $('#result-image').src = url;
+        $('#export-thumb').src = url;
+        $('#export-name').textContent = name;
+        $('#upload-meta').textContent = meta;
+        window.setTimeout(() => {
+          $('#processing-state').hidden = true;
+          $('#studio').hidden = false;
+          $('#studio').scrollIntoView({ behavior: 'smooth' });
+          toast('Studio ready. Preview is live.');
+        }, 1450);
+      }
+
+      $('#reset-studio').addEventListener('click', () => {
+        $('#studio').hidden = true;
+        $('#processing-state').hidden = true;
+        $('#empty-state').hidden = false;
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        toast('Ready for a new image.');
+      });
+
+      const preview = $('#preview');
+      const divider = $('#preview-divider');
+      const handle = $('#preview-handle');
+      const resultImage = $('#result-image');
+      let dragging = false;
+      const setCompare = (clientX) => {
+        const rect = preview.getBoundingClientRect();
+        const percent = Math.max(8, Math.min(92, ((clientX - rect.left) / rect.width) * 100));
+        divider.style.left = `${percent}%`;
+        handle.style.left = `${percent}%`;
+        resultImage.style.clipPath = `inset(0 0 0 ${percent}%)`;
+      };
+      handle.addEventListener('pointerdown', (event) => { dragging = true; handle.setPointerCapture(event.pointerId); });
+      handle.addEventListener('pointermove', (event) => { if (dragging) setCompare(event.clientX); });
+      handle.addEventListener('pointerup', () => { dragging = false; });
+      preview.addEventListener('pointerdown', (event) => { setCompare(event.clientX); });
+
+      $$('.tab').forEach((tab) => tab.addEventListener('click', () => {
+        $$('.tab').forEach((item) => { item.classList.remove('active'); item.setAttribute('aria-selected', 'false'); });
+        tab.classList.add('active');
+        tab.setAttribute('aria-selected', 'true');
+        $$('.tab-pane').forEach((pane) => { pane.hidden = pane.id !== `${tab.dataset.tab}-pane`; });
+      }));
+
+      $$('.toggle').forEach((toggle) => toggle.addEventListener('click', () => {
+        const isOn = toggle.classList.toggle('on');
+        toggle.setAttribute('aria-pressed', String(isOn));
+      }));
+
+      $('#blur-range').addEventListener('input', (event) => { $('#blur-value').textContent = `${event.target.value} px`; });
+      $('#download-button').addEventListener('click', () => {
+        $('#download-button').innerHTML = '<i data-lucide="check" width="15" height="15"></i> Export ready';
+        lucide.createIcons();
+        toast('Your high-resolution PNG is ready to download.');
+        window.setTimeout(() => {
+          $('#download-button').innerHTML = '<i data-lucide="download" width="15" height="15"></i> Download PNG';
+          lucide.createIcons();
+        }, 2600);
+      });
+    </script>
+  </body>
+</html>
