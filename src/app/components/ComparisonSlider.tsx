@@ -220,10 +220,10 @@ export const ComparisonSlider: React.FC<ComparisonSliderProps> = ({
 
       {/* Badges */}
       <div className="slider-badge before-badge" style={{ opacity: effectivePos > 15 ? 1 : 0 }}>
-        原圖 (Before)
+        Original
       </div>
       <div className="slider-badge after-badge" style={{ opacity: effectivePos < 85 ? 1 : 0 }}>
-        去背結果 (After)
+        Cutout
       </div>
     </div>
   );

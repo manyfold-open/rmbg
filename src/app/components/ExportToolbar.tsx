@@ -167,11 +167,11 @@ export const ExportToolbar: React.FC<ExportToolbarProps> = ({
       document.body.removeChild(link);
 
       setDownloadSuccess(true);
-      if (onShowToast) onShowToast('✦ 高清 PNG 圖片已成功下載！', 'success');
+      if (onShowToast) onShowToast('✦ High-resolution PNG downloaded', 'success');
       setTimeout(() => setDownloadSuccess(false), 3000);
     } catch (err) {
       console.error('Export failed:', err);
-      if (onShowToast) onShowToast('匯出失敗，請稍後重試。', 'warning');
+      if (onShowToast) onShowToast('Export failed. Please try again.', 'warning');
     } finally {
       setIsExporting(false);
     }
@@ -208,7 +208,7 @@ export const ExportToolbar: React.FC<ExportToolbarProps> = ({
       link2.click();
       document.body.removeChild(link2);
 
-      if (onShowToast) onShowToast('✦ 多版本套組（透明 + 純白）已全部匯出！', 'success');
+      if (onShowToast) onShowToast('✦ Transparent and white PNGs exported', 'success');
     } catch (err) {
       console.error('Bundle export failed:', err);
     } finally {
@@ -224,7 +224,7 @@ export const ExportToolbar: React.FC<ExportToolbarProps> = ({
         onClick={onReset}
       >
         <RotateCcw size={18} />
-        重新上傳
+        Upload new image
       </button>
 
       <button
@@ -232,10 +232,10 @@ export const ExportToolbar: React.FC<ExportToolbarProps> = ({
         className="button subtle bundle-btn"
         onClick={handleExportBundle}
         disabled={isExporting}
-        title="一次下載透明 PNG + 純白底 PNG"
+        title="Download a transparent PNG and a white-background PNG"
       >
         <Layers size={16} />
-        打包全套組
+        Export both
       </button>
 
       <button
@@ -247,12 +247,12 @@ export const ExportToolbar: React.FC<ExportToolbarProps> = ({
         {downloadSuccess ? (
           <>
             <Check size={18} />
-            下載成功！
+            Downloaded
           </>
         ) : (
           <>
             <Download size={18} />
-            {isExporting ? '處理中...' : '下載高清 PNG 圖片'}
+            {isExporting ? 'Preparing…' : 'Download PNG'}
           </>
         )}
       </button>

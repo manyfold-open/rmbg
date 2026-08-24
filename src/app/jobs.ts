@@ -40,8 +40,8 @@ export interface JobStatus {
 /** Plain-language progress for a status word that means nothing to whoever uploaded. */
 export function describeJobStatus(status: JobStatus): string {
   if (status.note && status.note.kind !== 'done') return status.note.note;
-  if (status.status === 'fetched') return 'Agent 已取得原圖,正在去背…';
-  return 'Agent 已收到工作,正在準備…';
+  if (status.status === 'fetched') return 'Agent received the image and is removing the background…';
+  return 'Agent received the job and is preparing…';
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -56,13 +56,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export async function fetchAsDataUrl(url: string): Promise<string> {
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`無法讀取去背結果 (HTTP ${response.status})`);
+    throw new Error(`Unable to read the background-removal result (HTTP ${response.status})`);
   }
   const blob = await response.blob();
   return await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error('無法讀取去背結果的內容。'));
+    reader.onerror = () => reject(new Error('Unable to read the background-removal result.'));
     reader.readAsDataURL(blob);
   });
 }
@@ -89,12 +89,12 @@ export async function waitForJobResult(
       if (response.ok) {
         status = (await response.json()) as JobStatus;
       } else if (response.status === 404) {
-        throw new Error('去背工作已不存在(可能已逾時被清除)。');
+        throw new Error('This background-removal job no longer exists or has expired.');
       }
     } catch (err) {
       // A single failed poll is not a failed job — the result lands in R2 through a
       // completely separate request. Only the deadline below ends the wait.
-      if (err instanceof Error && err.message.includes('去背工作已不存在')) throw err;
+      if (err instanceof Error && err.message.includes('no longer exists')) throw err;
     }
 
     if (status) {
@@ -114,8 +114,8 @@ export async function waitForJobResult(
     if (Date.now() >= deadline) {
       throw new Error(
         lastNote
-          ? `等待 Agent 去背結果逾時。Agent 最後的訊息:${lastNote}`
-          : '等待 Agent 去背結果逾時,Agent 沒有回報任何進度。',
+          ? `Timed out while waiting for the Agent. Last update: ${lastNote}`
+          : 'Timed out while waiting for the Agent. No progress was reported.',
       );
     }
   }

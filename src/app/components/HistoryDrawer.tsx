@@ -16,17 +16,17 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({ history, onSelect,
       <div className="history-header">
         <div className="history-title-group">
           <Clock size={16} className="history-icon" />
-          <h4 className="history-title">編輯歷史紀錄 Session History</h4>
-          <span className="history-count">{history.length} 個項目</span>
+          <h4 className="history-title">Session history</h4>
+          <span className="history-count">{history.length} {history.length === 1 ? 'item' : 'items'}</span>
         </div>
         <button
           type="button"
           className="button subtle history-clear-btn"
           onClick={onClear}
-          title="清除所有歷史紀錄"
+          title="Clear all history"
         >
           <Trash2 size={14} />
-          清除紀錄
+          Clear history
         </button>
       </div>
 
@@ -54,7 +54,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({ history, onSelect,
               </div>
               <div className="history-meta">
                 <span className="history-label">
-                  <Sparkles size={10} /> {item.subjectLabel || '去背圖片'}
+                  <Sparkles size={10} /> {item.subjectLabel || 'Background removal'}
                 </span>
                 <span className="history-time">{timeStr}</span>
               </div>

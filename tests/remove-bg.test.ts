@@ -110,7 +110,7 @@ describe('remove-bg handler', () => {
     try {
       const mockEnv = { DB: mockDb } as Env;
       await expect(handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' }, 'https://test.local')).rejects.toThrow(
-        '無可用的 AI 處理服務'
+        'No AI processing service is available'
       );
     } finally {
       process.env.GEMINI_API_KEY = origKey;
@@ -222,7 +222,7 @@ describe('remove-bg handler', () => {
     const mockEnv = { DB: mockDb, R2_IMAGE: r2.bucket } as Env;
     await expect(
       handleRemoveBg(mockEnv, { image: `data:image/png;base64,${CUTOUT_PNG_BASE64}` }, 'https://test.local'),
-    ).rejects.toThrow('回傳了佔位圖');
+    ).rejects.toThrow('returned a placeholder');
   });
 });
 
@@ -459,7 +459,7 @@ describe('assertUsableCutout', () => {
   };
 
   it('rejects the 1x1 placeholder an image-blind agent returns', () => {
-    expect(() => assertUsableCutout(PLACEHOLDER_1X1, 'rmbg')).toThrow('回傳了佔位圖');
+    expect(() => assertUsableCutout(PLACEHOLDER_1X1, 'rmbg')).toThrow('returned a placeholder');
   });
 
   it('reports the placeholder dimensions so the cause is visible', () => {
@@ -467,11 +467,11 @@ describe('assertUsableCutout', () => {
   });
 
   it('rejects a payload too small to be a cutout regardless of format', () => {
-    expect(() => assertUsableCutout(btoa('tiny'), 'rmbg')).toThrow('回傳了佔位圖');
+    expect(() => assertUsableCutout(btoa('tiny'), 'rmbg')).toThrow('returned a placeholder');
   });
 
   it('rejects data that is not valid base64', () => {
-    expect(() => assertUsableCutout('!!!not base64!!!', 'rmbg')).toThrow('無法解碼');
+    expect(() => assertUsableCutout('!!!not base64!!!', 'rmbg')).toThrow('could not be decoded');
   });
 
   it('accepts a real cutout', () => {
@@ -481,11 +481,11 @@ describe('assertUsableCutout', () => {
   it('rejects an opaque RGB PNG, however large and detailed', () => {
     // Production, 2026-08-24: asked for transparency, the image model returned an 848 KB
     // colour-type-2 PNG with a checkerboard *painted* into it. Big, sharp, and not a cutout.
-    expect(() => assertUsableCutout(pngOf(1264, 842, 2), 'rmbg')).toThrow('沒有透明通道');
+    expect(() => assertUsableCutout(pngOf(1264, 842, 2), 'rmbg')).toThrow('without an alpha channel');
   });
 
   it('rejects greyscale without alpha and accepts greyscale with it', () => {
-    expect(() => assertUsableCutout(pngOf(96, 96, 0), 'rmbg')).toThrow('沒有透明通道');
+    expect(() => assertUsableCutout(pngOf(96, 96, 0), 'rmbg')).toThrow('without an alpha channel');
     expect(() => assertUsableCutout(pngOf(96, 96, 4), 'rmbg')).not.toThrow();
   });
 
