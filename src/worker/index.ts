@@ -13,6 +13,8 @@
  *   GET    /api/agents/:agentId/messages    admin  chat history
  *   DELETE /api/agents/:agentId/messages    admin  reset the conversation
  *   POST   /api/agents/:agentId/chat        admin  one chat turn (text/event-stream)
+ *   POST   /api/remove-bg                   open   background removal
+ *   PUT    /api/job/:jobId/output           ticket the agent uploads its cutout here
  *
  * "admin" routes require the x-admin-password header — but only when the
  * ADMIN_PASSWORD secret is set. Without it the app is open, which is what makes
@@ -36,11 +38,16 @@ import {
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
 import { handleRemoveBg, type RemoveBgRequest } from './remove-bg';
+import { MAX_OUTPUT_BYTES, outputKeyFor, redeemJobTicket } from './job';
 import { loadAppSettings, saveAppSettings } from './settings-manager';
 
 const SERVICE = 'cloudflare-worker-starter';
 
 const app = new Hono<{ Bindings: Env }>();
+
+/** PUT /api/job/:jobId/output — the agent's upload leg, authorized by its ticket instead. */
+const isJobUpload = (method: string, path: string): boolean =>
+  method === 'PUT' && /^\/api\/job\/[a-f0-9]{32}\/output$/.test(path);
 
 /* ───────── middleware ───────── */
 
@@ -53,6 +60,12 @@ app.use('/api/*', async (c, next) => {
 // POSTs, so this shuts down CSRF without cookies or tokens.
 app.use('/api/*', async (c, next) => {
   if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
+    // The job upload is exempt: the uploader is an agent running curl, not a browser, so it
+    // has no Origin to send. CSRF is about ambient credentials being replayed by a browser,
+    // and this route has none — it is authorized solely by an unguessable single-use ticket.
+    if (isJobUpload(c.req.method, new URL(c.req.url).pathname)) {
+      return next();
+    }
     const origin = c.req.header('origin');
     if (!origin) {
       throw new HttpError(403, 'origin_required', 'Mutation requests must include a same-origin Origin header.');
@@ -75,7 +88,8 @@ const adminHeaderOk = (c: { env: Env; req: { header: (name: string) => string | 
   return safeEqual(c.req.header('x-admin-password') ?? '', required);
 };
 
-// Everything except /api/health, /api/state, /api/remove-bg, and GET /api/r2/* image fetching needs the password (when one is set).
+// Everything except /api/health, /api/state, /api/remove-bg, the job upload, and
+// GET /api/r2/* image fetching needs the password (when one is set).
 app.use('/api/*', async (c, next) => {
   const path = new URL(c.req.url).pathname;
   const isPublicR2Image = path.startsWith('/api/r2/') && path !== '/api/r2/list' && c.req.method === 'GET';
@@ -83,6 +97,7 @@ app.use('/api/*', async (c, next) => {
     path !== '/api/health' &&
     path !== '/api/state' &&
     path !== '/api/remove-bg' &&
+    !isJobUpload(c.req.method, path) &&
     !isPublicR2Image &&
     !adminHeaderOk(c)
   ) {
@@ -183,8 +198,44 @@ app.post('/api/remove-bg', async (c) => {
   if (!body || !body.image) {
     throw new HttpError(400, 'bad_request', 'Body must be JSON with a string property "image".');
   }
-  const result = await handleRemoveBg(c.env, body);
+  const result = await handleRemoveBg(c.env, body, new URL(c.req.url).origin);
   return c.json(result);
+});
+
+/**
+ * The agent's upload leg. Authorized by the single-use ticket in x-job-token — the agent
+ * has no admin password and no browser origin, so the ticket is the whole access story.
+ */
+app.put('/api/job/:jobId/output', async (c) => {
+  if (!c.env.R2_IMAGE) {
+    throw new HttpError(404, 'r2_not_configured', 'Cloudflare R2 is not configured.');
+  }
+  const jobId = c.req.param('jobId');
+  await redeemJobTicket(c.env, jobId, c.req.header('x-job-token') ?? '');
+
+  const declared = Number(c.req.header('content-length') ?? '0');
+  if (declared > MAX_OUTPUT_BYTES) {
+    throw new HttpError(413, 'output_too_large', 'Result exceeds the maximum upload size.');
+  }
+  const bytes = new Uint8Array(await c.req.arrayBuffer());
+  if (bytes.byteLength === 0) {
+    throw new HttpError(400, 'empty_output', 'Uploaded body was empty.');
+  }
+  // content-length is the agent's claim; byteLength is the fact. Check both.
+  if (bytes.byteLength > MAX_OUTPUT_BYTES) {
+    throw new HttpError(413, 'output_too_large', 'Result exceeds the maximum upload size.');
+  }
+
+  const contentType = (c.req.header('content-type') ?? 'image/png').split(';')[0].trim();
+  if (!contentType.startsWith('image/')) {
+    throw new HttpError(415, 'not_an_image', 'Result must be uploaded with an image content-type.');
+  }
+
+  await c.env.R2_IMAGE.put(outputKeyFor(jobId), bytes, {
+    httpMetadata: { contentType },
+    customMetadata: { label: 'agent cutout', createdAt: new Date().toISOString() },
+  });
+  return c.json({ ok: true, bytes: bytes.byteLength });
 });
 
 /* ───────── settings & r2 routes ───────── */

@@ -81,6 +81,17 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);
+
+-- One background-removal handoff. The token authorizes exactly one upload to
+-- PUT /api/job/:id/output, which is how a text-only agent returns an image at all.
+-- Rows are short-lived and pruned opportunistically -- see job.ts.
+CREATE TABLE IF NOT EXISTS bg_jobs (
+  job_id     TEXT PRIMARY KEY,
+  token      TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
 `;
 
 /**

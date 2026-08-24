@@ -3,7 +3,8 @@ import { HttpError, type Env } from './types';
 import { listConnectedAgents, credentialFor } from './connect';
 import { consumeA2AStream, fetchImageAsDataUrl } from './a2a';
 import { loadAppSettings } from './settings-manager';
-import { saveImageToR2 } from './r2';
+import { base64ToBytes, putImageAtKey, saveImageToR2 } from './r2';
+import { createJobTicket, pruneJobTickets } from './job';
 
 export interface RemoveBgRequest {
   /** Base64 string or data URL */
@@ -31,6 +32,49 @@ const MIN_CUTOUT_EDGE = 16;
 function extensionFor(mimeType: string): string {
   const subtype = mimeType.split('/')[1] ?? 'png';
   return subtype === 'jpeg' ? 'jpg' : subtype.replace(/[^a-z0-9]/gi, '') || 'png';
+}
+
+/** Chunked because String.fromCharCode(...bytes) blows the stack on a real image. */
+export function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
+ * The instruction the agent receives. The image also rides along as an A2A FilePart so the
+ * agent can *see* it, but seeing it is not enough: it reported it cannot materialise those
+ * bytes onto its filesystem, and its card only allows text back. So the real work is done
+ * against URLs, and the prompt spells out the two commands rather than describing them.
+ */
+function agentInstructions(inputUrl: string, uploadUrl: string, token: string, model: string): string {
+  return `Remove the background from an image. Do the work with shell commands — do not answer from the attached preview alone.
+
+STEP 1 — download the image:
+  curl -sS -o /tmp/input.png '${inputUrl}'
+
+STEP 2 — remove the background using ${model}.
+Send /tmp/input.png to the ${model} image model and ask it to return the identical image with
+the background fully removed and a real alpha channel. Preserve the subject's own pixels:
+colours, texture, hair, fur, edge detail and proportions. Do not redraw, regenerate, restyle,
+upscale, crop or recompose, and keep the output the same pixel dimensions as the input.
+Write the result to /tmp/output.png as a PNG with transparency.
+
+STEP 3 — upload the result:
+  curl -sS -X PUT --data-binary @/tmp/output.png \\
+    -H 'content-type: image/png' \\
+    -H 'x-job-token: ${token}' \\
+    '${uploadUrl}'
+
+A 200 response means the upload succeeded. Then reply with the single word DONE.
+
+The upload is how the result gets back — your reply text is not the delivery channel, so do
+not paste base64 into it. If any step fails, reply with plain text saying exactly which
+command failed and what it printed. An honest failure is useful; a placeholder image, a 1x1
+PNG, or the input returned unchanged is worse than nothing and will be rejected.`;
 }
 
 /** PNG dimensions straight out of the IHDR chunk. Null for anything that is not a PNG. */
@@ -99,7 +143,11 @@ function parseRemoveBgJson(text: string): { label?: string; svgPath?: string; bo
   }
 }
 
-export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<RemoveBgResponse> {
+export async function handleRemoveBg(
+  env: Env,
+  body: RemoveBgRequest,
+  origin: string,
+): Promise<RemoveBgResponse> {
   if (!body.image) {
     throw new HttpError(400, 'missing_image', 'Image data is required.');
   }
@@ -136,6 +184,28 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
       try {
         const cred = await credentialFor(env, selectedAgent.agentId);
 
+        if (!env.R2_IMAGE) {
+          throw new HttpError(
+            500,
+            'r2_required',
+            'R2 bucket R2_IMAGE 未綁定。Agent 只能回文字,圖片要靠 R2 交接,所以這條路徑需要 R2。',
+          );
+        }
+
+        // Hand the input over as a URL. The agent can download that; it cannot get at the
+        // bytes of a FilePart, and it cannot send bytes back at all.
+        const ticket = await createJobTicket(env, extensionFor(mimeType));
+        await putImageAtKey(
+          env,
+          ticket.inputKey,
+          base64ToBytes(base64Data),
+          mimeType,
+          `input for ${selectedAgent.name}`,
+        );
+        const inputUrl = `${origin}/api/r2/${encodeURIComponent(ticket.inputKey)}`;
+        const uploadUrl = `${origin}/api/job/${ticket.jobId}/output`;
+        const model = settings.bgRemoveModel || 'gemini-3.6-flash';
+
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
 
@@ -163,19 +233,7 @@ export async function handleRemoveBg(env: Env, body: RemoveBgRequest): Promise<R
                   },
                   {
                     kind: 'text',
-                    text: `Remove the background from the image attached to this message.
-
-The image is attached as a file part on this very message — you already have it. Do not ask
-for it, and do not say it is missing.
-
-Return the result as a transparent PNG image artifact, at the same pixel dimensions as the
-input. Preserve the subject's own pixels, colours, texture, hair, fur, edges and proportions
-exactly. Do not redraw, regenerate, restyle, upscale or crop. Remove only the background.
-
-Never answer with a 1x1 or otherwise blank placeholder image. If you cannot produce a real
-cutout, reply with plain text explaining why — a placeholder is worse than an honest failure.
-
-Do not return SVG, JSON, a polygon, or a description of what you would do.`,
+                    text: agentInstructions(inputUrl, uploadUrl, ticket.token, model),
                   },
                 ],
               },
@@ -191,6 +249,25 @@ Do not return SVG, JSON, a polygon, or a description of what you would do.`,
             },
             signal: controller.signal,
           });
+
+          // The upload is the expected channel, so look there before anything else. It has
+          // already landed: the agent uploads during its turn, and the turn is over.
+          const uploaded = await env.R2_IMAGE.get(ticket.outputKey);
+          if (uploaded) {
+            const bytes = new Uint8Array(await uploaded.arrayBuffer());
+            const finalMime = uploaded.httpMetadata?.contentType || 'image/png';
+            const cutoutBase64 = bytesToBase64(bytes);
+            assertUsableCutout(cutoutBase64, selectedAgent.name);
+
+            void pruneJobTickets(env);
+            return {
+              label: selectedAgent.name,
+              image: `data:${finalMime};base64,${cutoutBase64}`,
+              mimeType: finalMime,
+              r2Key: ticket.outputKey,
+              r2Url: `/api/r2/${encodeURIComponent(ticket.outputKey)}`,
+            };
+          }
 
           if (snapshot.image) {
             let cutoutDataUrl: string;
@@ -226,10 +303,13 @@ Do not return SVG, JSON, a polygon, or a description of what you would do.`,
             };
           }
 
+          // Nothing in R2 and nothing scrapeable from the reply. The agent's own words are
+          // the only diagnosis available, so pass them through rather than a generic message.
           throw new HttpError(
             500,
             'agent_no_image',
-            `Manyfold Agent ("${selectedAgent.name}") 未回傳圖片結果: Agent 回傳了文字敘述而未提供圖片 artifact (${snapshot.text || '無回應文字'})`
+            `Manyfold Agent ("${selectedAgent.name}") 沒有把結果上傳到 ${uploadUrl}。` +
+              `Agent 的回覆:${snapshot.text || '(無回應文字)'}`,
           );
         } finally {
           clearTimeout(timer);

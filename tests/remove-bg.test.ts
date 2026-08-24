@@ -21,13 +21,39 @@ const mockDb = {
   batch: async () => [],
 } as unknown as D1Database;
 
+/**
+ * The agent path now hands the image over through R2, so a bucket is part of the fixture
+ * rather than an optional extra. `seed` pre-loads what the agent is pretending to upload.
+ */
+function makeR2(seed: Record<string, { bytes: Uint8Array; contentType: string }> = {}) {
+  const store = new Map(Object.entries(seed));
+  return {
+    store,
+    bucket: {
+      async put(key: string, bytes: Uint8Array, opts?: { httpMetadata?: { contentType?: string } }) {
+        store.set(key, { bytes, contentType: opts?.httpMetadata?.contentType ?? 'image/png' });
+      },
+      async get(key: string) {
+        const hit = store.get(key);
+        if (!hit) return null;
+        return {
+          arrayBuffer: async () => hit.bytes.buffer,
+          httpMetadata: { contentType: hit.contentType },
+        };
+      },
+    } as unknown as R2Bucket,
+  };
+}
+
+const bytesOf = (base64: string) => Uint8Array.from(atob(base64), (ch) => ch.charCodeAt(0));
+
 describe('remove-bg handler', () => {
   it('throws HttpError 400 when no auth method or GEMINI_API_KEY is available', async () => {
     const origKey = process.env.GEMINI_API_KEY;
     delete process.env.GEMINI_API_KEY;
     try {
       const mockEnv = { DB: mockDb } as Env;
-      await expect(handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' })).rejects.toThrow(
+      await expect(handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' }, 'https://test.local')).rejects.toThrow(
         '無可用的 AI 處理服務'
       );
     } finally {
@@ -37,7 +63,7 @@ describe('remove-bg handler', () => {
 
   it('throws HttpError 400 when image is missing', async () => {
     const mockEnv = { GEMINI_API_KEY: 'test-key', DB: mockDb } as Env;
-    await expect(handleRemoveBg(mockEnv, { image: '' })).rejects.toThrow(
+    await expect(handleRemoveBg(mockEnv, { image: '' }, 'https://test.local')).rejects.toThrow(
       'Image data is required.'
     );
   });
@@ -96,8 +122,10 @@ describe('remove-bg handler', () => {
       },
     });
 
-    const mockEnv = { DB: mockDb } as Env;
-    const res = await handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' });
+    // Nothing uploaded to R2, so this exercises the fallback: a data URL scraped out of
+    // the agent's plain-text reply.
+    const mockEnv = { DB: mockDb, R2_IMAGE: makeR2().bucket } as Env;
+    const res = await handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' }, 'https://test.local');
     expect(res.image).toBeDefined();
     expect(res.image).toContain('data:image/png;base64,iVBORw0KGgo');
     expect(res.label).toBe('Test Agent');
@@ -142,10 +170,123 @@ describe('remove-bg handler', () => {
       },
     });
 
-    const mockEnv = { DB: mockDb } as Env;
-    await expect(handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' })).rejects.toThrow(
-      'Manyfold Agent ("Test Agent") 未回傳圖片結果'
+    const mockEnv = { DB: mockDb, R2_IMAGE: makeR2().bucket } as Env;
+    // The agent's own words are the only diagnosis available, so they must survive.
+    await expect(handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' }, 'https://test.local')).rejects.toThrow(
+      'Sorry, I cannot process this image.'
     );
+  });
+
+  it('prefers the R2 upload over anything in the agent reply', async () => {
+    vi.spyOn(connectModule, 'listConnectedAgents').mockResolvedValueOnce([
+      {
+        agentId: 'agent-1',
+        name: 'Test Agent',
+        description: 'Test',
+        rpcUrl: 'https://api.manyfold.ai/rpc',
+        expiresAt: null,
+        verified: true,
+        warning: null,
+        connectedAt: '2026-08-21T00:00:00Z',
+      },
+    ]);
+    vi.spyOn(connectModule, 'credentialFor').mockResolvedValueOnce({
+      rpcUrl: 'https://api.manyfold.ai/rpc',
+      token: 'test-token',
+      label: 'Test Agent',
+    });
+
+    const r2 = makeR2();
+    // The agent uploads during its turn, so by the time the stream resolves the object is
+    // already there. Simulate that by writing it from inside the mocked call.
+    vi.spyOn(a2aModule, 'consumeA2AStream').mockImplementationOnce(async () => {
+      const key = [...r2.store.keys()].find((k) => k.endsWith('_input.png'))!;
+      const jobId = key.slice('job_'.length, -'_input.png'.length);
+      await r2.bucket.put(`job_${jobId}_output.png`, bytesOf(CUTOUT_PNG_BASE64), {
+        httpMetadata: { contentType: 'image/png' },
+      });
+      return {
+        taskId: 't1',
+        contextId: 'c1',
+        state: 'completed',
+        text: 'DONE',
+        progressText: '',
+        terminal: true,
+        final: true,
+        diagnostics: {
+          events: 1,
+          lastKind: 'status-update',
+          state: 'completed',
+          taskId: 't1',
+          contextId: 'c1',
+          imageMimeType: null,
+          imageLength: 0,
+          imageArtifact: false,
+          final: true,
+        },
+      };
+    });
+
+    const mockEnv = { DB: mockDb, R2_IMAGE: r2.bucket } as Env;
+    const res = await handleRemoveBg(mockEnv, { image: `data:image/png;base64,${CUTOUT_PNG_BASE64}` }, 'https://test.local');
+
+    expect(res.label).toBe('Test Agent');
+    expect(res.image).toContain('data:image/png;base64,iVBORw0KGgo');
+    expect(res.r2Key).toMatch(/^job_[a-f0-9]{32}_output\.png$/);
+  });
+
+  it('rejects a placeholder even when it arrived through the upload', async () => {
+    vi.spyOn(connectModule, 'listConnectedAgents').mockResolvedValueOnce([
+      {
+        agentId: 'agent-1',
+        name: 'Test Agent',
+        description: 'Test',
+        rpcUrl: 'https://api.manyfold.ai/rpc',
+        expiresAt: null,
+        verified: true,
+        warning: null,
+        connectedAt: '2026-08-21T00:00:00Z',
+      },
+    ]);
+    vi.spyOn(connectModule, 'credentialFor').mockResolvedValueOnce({
+      rpcUrl: 'https://api.manyfold.ai/rpc',
+      token: 'test-token',
+      label: 'Test Agent',
+    });
+
+    const r2 = makeR2();
+    vi.spyOn(a2aModule, 'consumeA2AStream').mockImplementationOnce(async () => {
+      const key = [...r2.store.keys()].find((k) => k.endsWith('_input.png'))!;
+      const jobId = key.slice('job_'.length, -'_input.png'.length);
+      await r2.bucket.put(`job_${jobId}_output.png`, bytesOf(PLACEHOLDER_1X1_BASE64), {
+        httpMetadata: { contentType: 'image/png' },
+      });
+      return {
+        taskId: 't1',
+        contextId: 'c1',
+        state: 'completed',
+        text: 'DONE',
+        progressText: '',
+        terminal: true,
+        final: true,
+        diagnostics: {
+          events: 1,
+          lastKind: 'status-update',
+          state: 'completed',
+          taskId: 't1',
+          contextId: 'c1',
+          imageMimeType: null,
+          imageLength: 0,
+          imageArtifact: false,
+          final: true,
+        },
+      };
+    });
+
+    const mockEnv = { DB: mockDb, R2_IMAGE: r2.bucket } as Env;
+    await expect(
+      handleRemoveBg(mockEnv, { image: `data:image/png;base64,${CUTOUT_PNG_BASE64}` }, 'https://test.local'),
+    ).rejects.toThrow('回傳了佔位圖');
   });
 });
 

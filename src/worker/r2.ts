@@ -13,6 +13,27 @@ export function base64ToBytes(base64Data: string): Uint8Array {
   return bytes;
 }
 
+/**
+ * Store bytes under a caller-chosen key. saveImageToR2 invents a random key, which is
+ * right for results but useless for a handoff: both sides have to know the key up front.
+ */
+export async function putImageAtKey(
+  env: Env,
+  key: string,
+  bytes: Uint8Array,
+  contentType: string,
+  label: string,
+): Promise<{ r2Key: string; r2Url: string } | null> {
+  if (!env.R2_IMAGE) {
+    return null;
+  }
+  await env.R2_IMAGE.put(key, bytes, {
+    httpMetadata: { contentType },
+    customMetadata: { label, createdAt: new Date().toISOString() },
+  });
+  return { r2Key: key, r2Url: `/api/r2/${encodeURIComponent(key)}` };
+}
+
 export async function saveImageToR2(
   env: Env,
   dataUrlOrBase64: string,

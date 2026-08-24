@@ -206,14 +206,17 @@ describe('/api/settings and Cloudflare R2 endpoints', () => {
     const mockR2 = createMockR2();
     const mockEnv = { DB: mockDb, R2_IMAGE: mockR2 } as Env;
 
-    const res = await handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' });
+    const res = await handleRemoveBg(mockEnv, { image: 'data:image/png;base64,abc' }, 'https://test.local');
 
     expect(res.r2Key).toBeDefined();
     expect(res.r2Url).toBeDefined();
     expect(res.r2Url).toContain('/api/r2/');
 
+    // Two objects, not one: the input is staged in R2 as well, because handing the agent a
+    // URL is the only way it can reach the bytes.
     const list = await mockR2.list();
-    expect(list.objects.length).toBe(1);
-    expect(list.objects[0].key).toBe(res.r2Key);
+    const keys = list.objects.map((o: { key: string }) => o.key);
+    expect(keys).toContain(res.r2Key);
+    expect(keys.some((k: string) => k.endsWith('_input.png'))).toBe(true);
   });
 });
