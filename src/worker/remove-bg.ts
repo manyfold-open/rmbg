@@ -292,8 +292,6 @@ interface AgentJob {
   ticket: JobTicket;
   inputUrl: string;
   uploadUrl: string;
-  /** The input image, for the FilePart the agent can see but cannot read bytes from. */
-  base64Data: string;
   mimeType: string;
   model: string;
   r2Enabled: boolean;
@@ -326,18 +324,14 @@ async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Pro
             kind: 'message',
             role: 'user',
             messageId: `rmbg-${crypto.randomUUID()}`,
+            // No A2A FilePart here. The agent cannot read bytes off one anyway — the
+            // text prompt's STEP 1 has it curl the full image from inputUrl, which is
+            // the only path that actually feeds the pixels into processing. Inlining
+            // the image as base64 in this JSON-RPC body too was pure duplication, and
+            // for large originals (megapixel photos run ~4MB+ of base64) it pushed the
+            // request over the agent endpoint's body-size limit: a straight HTTP 413
+            // that left the job stuck pending until the ticket's 10-minute TTL expired.
             parts: [
-              // A2A 0.3.0 FilePart. NOT `kind: 'inline-data'` — that is the Google
-              // GenAI SDK's spelling, not a part kind the A2A spec defines, so the
-              // server dropped it and the agent saw a bare text prompt with no image.
-              {
-                kind: 'file',
-                file: {
-                  name: `input.${extensionFor(job.mimeType)}`,
-                  mimeType: job.mimeType,
-                  bytes: job.base64Data,
-                },
-              },
               {
                 kind: 'text',
                 text: agentInstructions(job.inputUrl, job.uploadUrl, ticket.token, job.model),
@@ -526,7 +520,6 @@ export async function handleRemoveBg(
           ticket,
           inputUrl: `${origin}/api/r2/${encodeURIComponent(ticket.inputKey)}`,
           uploadUrl: `${origin}/api/job/${ticket.jobId}/output`,
-          base64Data,
           mimeType,
           // Fixed, not settings.bgRemoveModel: only an -image model can do the magenta-key
           // step the agent runs (see GEMINI.md). bgRemoveModel picks the text model for the
