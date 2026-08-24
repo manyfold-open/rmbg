@@ -17,6 +17,16 @@
  * so the ticket is the only thing guarding it: 256 bits of randomness, one job, one use,
  * ten minutes. Nothing here is derived from the request, so a caller cannot guess a ticket
  * by knowing when a job ran.
+ *
+ * Because a turn takes minutes, `POST /api/remove-bg` answers 202 with a job id and runs
+ * the A2A stream in `waitUntil`. The ticket row is therefore the record of the job, and
+ * `GET /api/job/:id/status` is how the browser learns it finished. The upload is what
+ * settles a job, not the stream: the agent has been seen uploading long after the stream
+ * dropped, so nothing here may treat a lost stream as a verdict.
+ *
+ * `bg_job_notes` carries the *reason* the status alone cannot: with no synchronous
+ * response left to throw into, the agent's own words are the only explanation of a job
+ * that will never finish. Status wins over note — a note is prose, the upload is fact.
  */
 
 import { safeEqual } from './crypto';
@@ -125,6 +135,52 @@ export async function markInputFetched(env: Env, jobId: string): Promise<void> {
     .catch(() => undefined);
 }
 
+/**
+ * What the agent said, kept where the browser can still read it.
+ *
+ * `progress` means keep waiting — a lost A2A stream is the usual cause, and the agent
+ * finishes the upload regardless. `failed` means stop: the turn ended, or the agent said
+ * it could not do the work. The distinction is the whole point of the kind column, because
+ * the two look identical from the outside — no result, yet.
+ */
+export type JobNoteKind = 'progress' | 'failed' | 'done';
+
+export interface JobNote {
+  kind: JobNoteKind;
+  note: string;
+  updatedAt: string;
+}
+
+/** An agent's failure text can be a whole transcript. Enough to diagnose, not to store. */
+const MAX_NOTE_CHARS = 2000;
+
+/** Best-effort: a note that fails to save must never fail the job it describes. */
+export async function setJobNote(
+  env: Env,
+  jobId: string,
+  kind: JobNoteKind,
+  note: string,
+): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO bg_job_notes (job_id, kind, note, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT (job_id) DO UPDATE SET
+       kind = excluded.kind, note = excluded.note, updated_at = excluded.updated_at`,
+  )
+    .bind(jobId, kind, note.slice(0, MAX_NOTE_CHARS), now())
+    .run()
+    .catch(() => undefined);
+}
+
+export async function getJobNote(env: Env, jobId: string): Promise<JobNote | null> {
+  const row = await env.DB.prepare(
+    'SELECT kind, note, updated_at AS updatedAt FROM bg_job_notes WHERE job_id = ?',
+  )
+    .bind(jobId)
+    .first<JobNote>()
+    .catch(() => null);
+  return row ?? null;
+}
+
 /** What a caller may know about a job. Deliberately never includes the token. */
 export async function getJobStatus(
   env: Env,
@@ -141,6 +197,10 @@ export async function getJobStatus(
 export async function pruneJobTickets(env: Env): Promise<void> {
   await env.DB.prepare('DELETE FROM bg_jobs WHERE expires_at < ?')
     .bind(new Date(Date.now() - TICKET_TTL_MS).toISOString())
+    .run()
+    .catch(() => undefined);
+  // Notes outlive nothing: a note whose job is gone can never be read again.
+  await env.DB.prepare('DELETE FROM bg_job_notes WHERE job_id NOT IN (SELECT job_id FROM bg_jobs)')
     .run()
     .catch(() => undefined);
 }

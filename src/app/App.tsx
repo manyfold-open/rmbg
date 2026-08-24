@@ -11,6 +11,7 @@ import type { AppState } from '../shared/types';
 import type { BgConfig, PostProcessConfig, HistoryItem, ToastMessage } from './types/studio';
 import { DEFAULT_POST_PROCESS } from './types/studio';
 import { api } from './api';
+import { waitForJobResult } from './jobs';
 
 import { compressImageForAI, createCutoutFromSvgPath } from './utils/image';
 
@@ -25,6 +26,8 @@ export function App() {
   const [svgPath, setSvgPath] = useState<string | null>(null);
   const [subjectLabel, setSubjectLabel] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  /** What the agent is doing right now. An agent turn runs for minutes — say something. */
+  const [progressHint, setProgressHint] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Background Manyfold Agents state for A2A delegation
@@ -127,6 +130,7 @@ export function App() {
     setCutoutImage(null);
     setSvgPath(null);
     setSubjectLabel(null);
+    setProgressHint(null);
     setPostProcess(DEFAULT_POST_PROCESS);
 
     try {
@@ -157,7 +161,33 @@ export function App() {
         svgPath?: string;
         r2Key?: string;
         r2Url?: string;
+        jobId?: string;
+        statusUrl?: string;
       };
+
+      // A jobId means 202: the agent's turn is running in the Worker's waitUntil and the
+      // cutout will appear in R2 minutes from now. Nothing else in this response is a
+      // result. Without one, this is the direct-Gemini path, which answers inline.
+      if (data.jobId && data.statusUrl) {
+        const agentLabel = data.label || 'Manyfold Agent';
+        setSubjectLabel(agentLabel);
+        setProgressHint(`已交給 ${agentLabel},等待去背結果…`);
+
+        const { dataUrl: cutout } = await waitForJobResult(data.statusUrl, (message) =>
+          setProgressHint(message),
+        );
+
+        setCutoutImage(cutout);
+        setSvgPath(null);
+        saveToHistory({
+          originalImage: dataUrl,
+          cutoutImage: cutout,
+          svgPath: null,
+          subjectLabel: agentLabel,
+        });
+        showToast(`✦ AI 去背完成 (${agentLabel}) · 已備份至 R2`, 'success');
+        return;
+      }
 
       if (!data.image && !data.svgPath) {
         throw new Error('去背處理失敗：未收到 Agent 去背圖片結果。');
@@ -204,6 +234,7 @@ export function App() {
       showToast(message, 'warning');
     } finally {
       setIsLoading(false);
+      setProgressHint(null);
     }
   };
 
@@ -214,6 +245,7 @@ export function App() {
     setSubjectLabel(null);
     setErrorMsg(null);
     setIsLoading(false);
+    setProgressHint(null);
     setBgConfig({
       mode: 'transparent',
       color: '#FFFFFF',
@@ -340,7 +372,12 @@ export function App() {
                 <RefreshCw size={40} className="spinning-icon" />
               </div>
               <h3 className="loading-title">AI 正在分析主體輪廓與去背...</h3>
-              <p className="loading-sub">精確分割人像、寵物、商品與各類物件</p>
+              <p className="loading-sub">
+                {progressHint ?? '精確分割人像、寵物、商品與各類物件'}
+              </p>
+              {progressHint && (
+                <p className="loading-sub">Agent 去背約需 5 分鐘,請保持此頁開啟。</p>
+              )}
             </div>
           )}
 

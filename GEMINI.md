@@ -37,6 +37,12 @@ Worker  <-- R2                       reads it back when your turn ends
 
 A2A carries instructions and your prose. **The upload is the delivery channel.**
 
+That is literal now: the Worker answers the browser immediately and watches R2 for your
+upload, so a successful `PUT` finishes the job even if the stream between us has already
+dropped and your reply reaches nobody. Never abandon a turn because the connection looks
+dead — upload anyway. Conversely, replying "done" without a successful `PUT` delivers
+nothing; the Worker will wait, then tell the user your words as the reason it failed.
+
 ## What arrives
 
 One A2A message with two parts:

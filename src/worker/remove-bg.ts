@@ -1,10 +1,10 @@
 import { GoogleGenAI } from '@google/genai';
-import { HttpError, type Env } from './types';
+import { HttpError, type AgentCredential, type Env } from './types';
 import { listConnectedAgents, credentialFor } from './connect';
 import { consumeA2AStream, fetchImageAsDataUrl, type StreamSnapshot } from './a2a';
 import { loadAppSettings } from './settings-manager';
 import { base64ToBytes, putImageAtKey, saveImageToR2 } from './r2';
-import { createJobTicket, pruneJobTickets } from './job';
+import { createJobTicket, pruneJobTickets, setJobNote, type JobTicket } from './job';
 
 export interface RemoveBgRequest {
   /** Base64 string or data URL */
@@ -21,6 +21,12 @@ export interface RemoveBgResponse {
   boundingBox?: [number, number, number, number];
   r2Key?: string;
   r2Url?: string;
+  /**
+   * Set only on the asynchronous agent path. Its presence is the signal to the browser
+   * that there is no image in this response and it should poll `statusUrl` instead.
+   */
+  jobId?: string;
+  statusUrl?: string;
 }
 
 const REMOVE_BG_TIMEOUT_MS = 180_000;
@@ -30,25 +36,38 @@ const REMOVE_BG_TIMEOUT_MS = 180_000;
  *
  * The stream is a progress channel; the upload is the delivery channel. A lost stream —
  * seen in production as "Network connection lost" after ~2 minutes — tells us nothing
- * about the upload, so keep looking before calling the job failed. A stream that ends
- * cleanly needs no grace at all: the agent is instructed to reply only after its upload
- * returns 200, so a finished turn with an empty key means it never uploaded.
+ * about the upload, so keep looking before calling the job failed. Only a turn that
+ * actually reached a terminal state needs no grace: the agent is instructed to reply
+ * after its upload returns 200, so a *finished* turn with an empty key never uploaded.
  */
 const UPLOAD_GRACE_BROKEN_MS = 60_000;
 const UPLOAD_POLL_MS = 2_000;
+
+/**
+ * The same grace, once nobody is waiting on the response.
+ *
+ * A real turn takes about five minutes; the stream dies at 126 seconds. Off the request's
+ * critical path there is no reason to give up before the ticket does, so watch almost to
+ * its ten-minute expiry. This is best-effort by nature — `waitUntil` work can be evicted —
+ * and nothing depends on it: the upload route is what records the result. All this buys is
+ * a written reason when the result never comes.
+ */
+const ASYNC_UPLOAD_GRACE_MS = 6 * 60_000;
+const ASYNC_UPLOAD_POLL_MS = 5_000;
 
 /** Poll R2 for the agent's upload until it lands or the grace period runs out. */
 async function waitForUpload(
   bucket: R2Bucket,
   key: string,
   graceMs: number,
+  pollMs = UPLOAD_POLL_MS,
 ): Promise<R2ObjectBody | null> {
   const deadline = Date.now() + graceMs;
   for (;;) {
     const hit = await bucket.get(key);
     if (hit) return hit;
     if (Date.now() >= deadline) return null;
-    await new Promise((resolve) => setTimeout(resolve, UPLOAD_POLL_MS));
+    await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
 }
 
@@ -260,10 +279,186 @@ function parseRemoveBgJson(text: string): { label?: string; svgPath?: string; bo
   }
 }
 
+/** Everything one delegated background removal needs, once the input is already staged. */
+interface AgentJob {
+  env: Env;
+  cred: AgentCredential;
+  agentName: string;
+  ticket: JobTicket;
+  inputUrl: string;
+  uploadUrl: string;
+  /** The input image, for the FilePart the agent can see but cannot read bytes from. */
+  base64Data: string;
+  mimeType: string;
+  model: string;
+  r2Enabled: boolean;
+  production: boolean;
+}
+
+/**
+ * Run the agent's turn and collect its result.
+ *
+ * Called two ways: awaited, for the legacy synchronous response, and from `waitUntil`,
+ * where the browser has already been given a job id and polls for the outcome. The only
+ * difference is how long it is willing to wait — and that in the second case the return
+ * value is dropped, so every conclusion it reaches is also written to the job's note.
+ */
+async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Promise<RemoveBgResponse> {
+  const { env, cred, agentName, ticket } = job;
+  const bucket = env.R2_IMAGE!;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
+
+  try {
+    let snapshot: StreamSnapshot | null = null;
+    let streamError: string | null = null;
+
+    try {
+      snapshot = await consumeA2AStream({
+        cred,
+        params: {
+          message: {
+            kind: 'message',
+            role: 'user',
+            messageId: `rmbg-${crypto.randomUUID()}`,
+            parts: [
+              // A2A 0.3.0 FilePart. NOT `kind: 'inline-data'` — that is the Google
+              // GenAI SDK's spelling, not a part kind the A2A spec defines, so the
+              // server dropped it and the agent saw a bare text prompt with no image.
+              {
+                kind: 'file',
+                file: {
+                  name: `input.${extensionFor(job.mimeType)}`,
+                  mimeType: job.mimeType,
+                  bytes: job.base64Data,
+                },
+              },
+              {
+                kind: 'text',
+                text: agentInstructions(job.inputUrl, job.uploadUrl, ticket.token, job.model),
+              },
+            ],
+          },
+          configuration: {
+            acceptedOutputModes: [
+              'image/png',
+              'image/jpeg',
+              'image/webp',
+              'text/plain',
+              'application/json',
+            ],
+          },
+        },
+        signal: controller.signal,
+      });
+    } catch (streamErr: unknown) {
+      // Do not give up here. The agent's upload travels over plain HTTPS and is
+      // completely independent of this stream, so a dropped stream is not evidence
+      // that the job failed — only that we stopped hearing about it.
+      streamError = streamErr instanceof Error ? streamErr.message : String(streamErr);
+      console.error('Manyfold A2A stream error:', streamError);
+      await setJobNote(
+        env,
+        ticket.jobId,
+        'progress',
+        `與 Agent 的連線中斷 (${streamError}),但 Agent 仍在背景執行,繼續等待它上傳結果。`,
+      );
+    }
+
+    // Only a *terminal* snapshot means the turn is over. A stream can also just stop —
+    // consumeA2AStream returns what it accumulated when the body ends without a final
+    // event — and that is the same situation as a thrown connection error: the agent is
+    // still working, we simply stopped hearing about it. Give both the full grace period.
+    if (snapshot && !snapshot.terminal) {
+      await setJobNote(
+        env,
+        ticket.jobId,
+        'progress',
+        `Agent 的回報中斷在「${snapshot.state}」,尚未結束工作,繼續等待它上傳結果。`,
+      );
+    }
+
+    // The upload is the expected channel, so look there before anything else.
+    const finished = snapshot?.terminal === true;
+    const uploaded = await waitForUpload(bucket, ticket.outputKey, finished ? 0 : graceMs, pollMs);
+    if (uploaded) {
+      const bytes = new Uint8Array(await uploaded.arrayBuffer());
+      const finalMime = uploaded.httpMetadata?.contentType || 'image/png';
+      const cutoutBase64 = bytesToBase64(bytes);
+      assertUsableCutout(cutoutBase64, agentName);
+
+      await setJobNote(env, ticket.jobId, 'done', snapshot?.text || '去背完成。');
+      void pruneJobTickets(env);
+      return {
+        label: agentName,
+        image: `data:${finalMime};base64,${cutoutBase64}`,
+        mimeType: finalMime,
+        r2Key: ticket.outputKey,
+        r2Url: `/api/r2/${encodeURIComponent(ticket.outputKey)}`,
+      };
+    }
+
+    if (snapshot?.image) {
+      let cutoutDataUrl: string;
+      let finalMime = snapshot.image.mimeType || 'image/png';
+
+      if (/^https?:\/\//i.test(snapshot.image.data)) {
+        const fetched = await fetchImageAsDataUrl(snapshot.image.data, {
+          cred,
+          production: job.production,
+        });
+        cutoutDataUrl = fetched.dataUrl;
+        finalMime = fetched.mimeType || finalMime;
+      } else if (snapshot.image.data.startsWith('data:')) {
+        cutoutDataUrl = snapshot.image.data;
+      } else {
+        cutoutDataUrl = `data:${finalMime};base64,${snapshot.image.data}`;
+      }
+
+      // Verify before it reaches R2 — a placeholder must not become a stored "result".
+      assertUsableCutout(cutoutDataUrl.slice(cutoutDataUrl.indexOf(',') + 1), agentName);
+
+      let r2Info: { r2Key: string; r2Url: string } | null = null;
+      if (job.r2Enabled) {
+        r2Info = await saveImageToR2(env, cutoutDataUrl, finalMime, agentName);
+      }
+
+      await setJobNote(env, ticket.jobId, 'done', snapshot.text || '去背完成。');
+      return {
+        label: agentName,
+        image: cutoutDataUrl,
+        mimeType: finalMime,
+        r2Key: r2Info?.r2Key,
+        r2Url: r2Info?.r2Url,
+      };
+    }
+
+    // Nothing in R2 and nothing scrapeable from the reply. Whatever the agent last
+    // said is the only diagnosis available, so pass it through verbatim rather than
+    // replacing it with a generic message. Name the job too: its output key is
+    // readable at /api/r2/ if the upload turns up late.
+    throw new HttpError(
+      500,
+      'agent_no_image',
+      `Manyfold Agent ("${agentName}") 沒有把結果上傳到 ${job.uploadUrl}。` +
+        (streamError ? `連線問題:${streamError}。` : '') +
+        `Agent 的回覆:${snapshot?.text || '(無回應文字)'}`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function handleRemoveBg(
   env: Env,
   body: RemoveBgRequest,
   origin: string,
+  /**
+   * Cloudflare's `executionCtx.waitUntil`. Given one, the agent path answers 202 with a
+   * job id and runs the turn on borrowed time; without one it blocks, which is what the
+   * tests and any non-request caller still expect.
+   */
+  waitUntil?: (promise: Promise<unknown>) => void,
 ): Promise<RemoveBgResponse> {
   if (!body.image) {
     throw new HttpError(400, 'missing_image', 'Image data is required.');
@@ -319,135 +514,49 @@ export async function handleRemoveBg(
           mimeType,
           `input for ${selectedAgent.name}`,
         );
-        const inputUrl = `${origin}/api/r2/${encodeURIComponent(ticket.inputKey)}`;
-        const uploadUrl = `${origin}/api/job/${ticket.jobId}/output`;
-        const model = settings.bgRemoveModel || 'gemini-3.6-flash';
+        const job: AgentJob = {
+          env,
+          cred,
+          agentName: selectedAgent.name,
+          ticket,
+          inputUrl: `${origin}/api/r2/${encodeURIComponent(ticket.inputKey)}`,
+          uploadUrl: `${origin}/api/job/${ticket.jobId}/output`,
+          base64Data,
+          mimeType,
+          model: settings.bgRemoveModel || 'gemini-3.6-flash',
+          r2Enabled: settings.r2Enabled,
+          production: env.ENVIRONMENT === 'production',
+        };
 
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
-
-        const messageId = `rmbg-${crypto.randomUUID()}`;
-
-        try {
-          let snapshot: StreamSnapshot | null = null;
-          let streamError: string | null = null;
-
-          try {
-            snapshot = await consumeA2AStream({
-            cred,
-            params: {
-              message: {
-                kind: 'message',
-                role: 'user',
-                messageId,
-                parts: [
-                  // A2A 0.3.0 FilePart. NOT `kind: 'inline-data'` — that is the Google
-                  // GenAI SDK's spelling, not a part kind the A2A spec defines, so the
-                  // server dropped it and the agent saw a bare text prompt with no image.
-                  {
-                    kind: 'file',
-                    file: {
-                      name: `input.${extensionFor(mimeType)}`,
-                      mimeType,
-                      bytes: base64Data,
-                    },
-                  },
-                  {
-                    kind: 'text',
-                    text: agentInstructions(inputUrl, uploadUrl, ticket.token, model),
-                  },
-                ],
-              },
-              configuration: {
-                acceptedOutputModes: [
-                  'image/png',
-                  'image/jpeg',
-                  'image/webp',
-                  'text/plain',
-                  'application/json',
-                ],
-              },
-            },
-            signal: controller.signal,
-            });
-          } catch (streamErr: unknown) {
-            // Do not give up here. The agent's upload travels over plain HTTPS and is
-            // completely independent of this stream, so a dropped stream is not evidence
-            // that the job failed — only that we stopped hearing about it.
-            streamError = streamErr instanceof Error ? streamErr.message : String(streamErr);
-            console.error('Manyfold A2A stream error:', streamError);
-          }
-
-          // The upload is the expected channel, so look there before anything else.
-          const uploaded = await waitForUpload(
-            env.R2_IMAGE,
-            ticket.outputKey,
-            snapshot ? 0 : UPLOAD_GRACE_BROKEN_MS,
+        if (waitUntil) {
+          // A turn takes about five minutes and the A2A stream dies at 126 seconds, so
+          // waiting here means the browser never sees a result that was produced anyway.
+          // Hand back the job id instead and let the upload route record the outcome.
+          await setJobNote(
+            env,
+            ticket.jobId,
+            'progress',
+            `已把圖片交給 Manyfold Agent ("${selectedAgent.name}"),等待它去背並上傳結果。`,
           );
-          if (uploaded) {
-            const bytes = new Uint8Array(await uploaded.arrayBuffer());
-            const finalMime = uploaded.httpMetadata?.contentType || 'image/png';
-            const cutoutBase64 = bytesToBase64(bytes);
-            assertUsableCutout(cutoutBase64, selectedAgent.name);
-
-            void pruneJobTickets(env);
-            return {
-              label: selectedAgent.name,
-              image: `data:${finalMime};base64,${cutoutBase64}`,
-              mimeType: finalMime,
-              r2Key: ticket.outputKey,
-              r2Url: `/api/r2/${encodeURIComponent(ticket.outputKey)}`,
-            };
-          }
-
-          if (snapshot?.image) {
-            let cutoutDataUrl: string;
-            let finalMime = snapshot.image.mimeType || 'image/png';
-
-            if (/^https?:\/\//i.test(snapshot.image.data)) {
-              const fetched = await fetchImageAsDataUrl(snapshot.image.data, {
-                cred,
-                production: env.ENVIRONMENT === 'production',
-              });
-              cutoutDataUrl = fetched.dataUrl;
-              finalMime = fetched.mimeType || finalMime;
-            } else if (snapshot.image.data.startsWith('data:')) {
-              cutoutDataUrl = snapshot.image.data;
-            } else {
-              cutoutDataUrl = `data:${finalMime};base64,${snapshot.image.data}`;
-            }
-
-            // Verify before it reaches R2 — a placeholder must not become a stored "result".
-            assertUsableCutout(cutoutDataUrl.slice(cutoutDataUrl.indexOf(',') + 1), selectedAgent.name);
-
-            let r2Info: { r2Key: string; r2Url: string } | null = null;
-            if (settings.r2Enabled && env.R2_IMAGE) {
-              r2Info = await saveImageToR2(env, cutoutDataUrl, finalMime, selectedAgent.name);
-            }
-
-            return {
-              label: selectedAgent.name,
-              image: cutoutDataUrl,
-              mimeType: finalMime,
-              r2Key: r2Info?.r2Key,
-              r2Url: r2Info?.r2Url,
-            };
-          }
-
-          // Nothing in R2 and nothing scrapeable from the reply. Whatever the agent last
-          // said is the only diagnosis available, so pass it through verbatim rather than
-          // replacing it with a generic message. Name the job too: its output key is
-          // readable at /api/r2/ if the upload turns up late.
-          throw new HttpError(
-            500,
-            'agent_no_image',
-            `Manyfold Agent ("${selectedAgent.name}") 沒有把結果上傳到 ${uploadUrl}。` +
-              (streamError ? `連線問題:${streamError}。` : '') +
-              `Agent 的回覆:${snapshot?.text || '(無回應文字)'}`,
+          waitUntil(
+            runAgentJob(job, ASYNC_UPLOAD_GRACE_MS, ASYNC_UPLOAD_POLL_MS).catch(
+              async (err: unknown) => {
+                // Nobody is left to throw to. The note is the only way this reaches the
+                // user, so it has to be written even when the failure is our own bug.
+                const message = err instanceof Error ? err.message : String(err);
+                console.error('Manyfold A2A background job failed:', message);
+                await setJobNote(env, ticket.jobId, 'failed', message);
+              },
+            ),
           );
-        } finally {
-          clearTimeout(timer);
+          return {
+            label: selectedAgent.name,
+            jobId: ticket.jobId,
+            statusUrl: `/api/job/${ticket.jobId}/status`,
+          };
         }
+
+        return await runAgentJob(job, UPLOAD_GRACE_BROKEN_MS);
       } catch (err: unknown) {
         if (err instanceof HttpError) throw err;
         const message = err instanceof Error ? err.message : String(err);

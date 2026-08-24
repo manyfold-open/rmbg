@@ -13,8 +13,9 @@
  *   GET    /api/agents/:agentId/messages    admin  chat history
  *   DELETE /api/agents/:agentId/messages    admin  reset the conversation
  *   POST   /api/agents/:agentId/chat        admin  one chat turn (text/event-stream)
- *   POST   /api/remove-bg                   open   background removal
+ *   POST   /api/remove-bg                   open   background removal (202 on the agent path)
  *   PUT    /api/job/:jobId/output           ticket the agent uploads its cutout here
+ *   GET    /api/job/:jobId/status           open   poll a 202'd job: status + agent's note
  *
  * "admin" routes require the x-admin-password header — but only when the
  * ADMIN_PASSWORD secret is set. Without it the app is open, which is what makes
@@ -41,6 +42,7 @@ import { assertUsableCutoutBytes, handleRemoveBg, type RemoveBgRequest } from '.
 import {
   MAX_OUTPUT_BYTES,
   consumeJobTicket,
+  getJobNote,
   getJobStatus,
   jobIdFromInputKey,
   markInputFetched,
@@ -60,6 +62,23 @@ const isJobUpload = (method: string, path: string): boolean =>
 /** GET /api/job/:jobId/status — public for the same reason /api/remove-bg is. */
 const isJobStatus = (method: string, path: string): boolean =>
   method === 'GET' && /^\/api\/job\/[a-f0-9]{32}\/status$/.test(path);
+
+/**
+ * `c.executionCtx.waitUntil`, or undefined where there is no execution context — Hono
+ * throws rather than returning null when a request is dispatched without one, which is how
+ * every unit test calls `app.request`. Work scheduled through this is best-effort by
+ * definition, so having none is a degradation, not an error.
+ */
+const waitUntilOf = (c: {
+  executionCtx: { waitUntil: (promise: Promise<unknown>) => void };
+}): ((promise: Promise<unknown>) => void) | undefined => {
+  try {
+    const ctx = c.executionCtx;
+    return (promise: Promise<unknown>) => ctx.waitUntil(promise);
+  } catch {
+    return undefined;
+  }
+};
 
 /* ───────── middleware ───────── */
 
@@ -206,13 +225,24 @@ app.post('/api/agents/:agentId/chat', async (c) => {
   });
 });
 
+/**
+ * Background removal.
+ *
+ * Answers 202 with `{ jobId, statusUrl }` whenever the request goes to a Manyfold agent: a
+ * turn takes about five minutes, the A2A stream dies at 126 seconds, and a browser will
+ * not hold a fetch open that long anyway. The agent's turn continues in `waitUntil` and
+ * the result arrives through PUT /api/job/:jobId/output, so the response the caller waits
+ * for is only the acknowledgement. Poll `statusUrl` for the rest.
+ *
+ * The direct-Gemini fallback has no such problem and still answers 200 with the image.
+ */
 app.post('/api/remove-bg', async (c) => {
   const body = (await c.req.json().catch(() => null)) as RemoveBgRequest | null;
   if (!body || !body.image) {
     throw new HttpError(400, 'bad_request', 'Body must be JSON with a string property "image".');
   }
-  const result = await handleRemoveBg(c.env, body, new URL(c.req.url).origin);
-  return c.json(result);
+  const result = await handleRemoveBg(c.env, body, new URL(c.req.url).origin, waitUntilOf(c));
+  return result.jobId ? c.json(result, 202) : c.json(result);
 });
 
 /**
@@ -261,15 +291,21 @@ app.put('/api/job/:jobId/output', async (c) => {
 /**
  * How far a job got. No token required: the id is 128 random bits, it reveals only a
  * status word, and being able to ask "did my upload work" is what makes a silent agent
- * failure diagnosable at all.
+ * failure diagnosable at all. This is what the browser polls after a 202.
  *
  *   pending  — ticket issued, the agent has not downloaded the input
  *   fetched  — the agent downloaded the input but has not uploaded a result
- *   uploaded — the result arrived
+ *   uploaded — the result arrived, and `output.key` is readable at /api/r2/:key
+ *
+ * `note` carries the agent's own words, which since the turn moved into waitUntil have
+ * nowhere else to go. Its `kind` is what a poller should branch on: `failed` means stop
+ * waiting, `progress` means a hitch worth showing but not a verdict. `status` still wins —
+ * a broken stream writes a note while the upload it knows nothing about is still in
+ * flight, so a job can be both noted and finished.
  */
 app.get('/api/job/:jobId/status', async (c) => {
   const jobId = c.req.param('jobId');
-  const row = await getJobStatus(c.env, jobId);
+  const [row, note] = await Promise.all([getJobStatus(c.env, jobId), getJobNote(c.env, jobId)]);
   if (!row) {
     throw new HttpError(404, 'job_not_found', 'No such job.');
   }
@@ -279,6 +315,7 @@ app.get('/api/job/:jobId/status', async (c) => {
     createdAt: row.createdAt,
     expiresAt: row.expiresAt,
     output: output ? { key: outputKeyFor(jobId), size: output.size } : null,
+    note,
   });
 });
 

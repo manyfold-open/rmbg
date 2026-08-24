@@ -92,6 +92,21 @@ CREATE TABLE IF NOT EXISTS bg_jobs (
   created_at TEXT NOT NULL,
   expires_at TEXT NOT NULL
 );
+
+-- Why a job is where it is, in the agent's own words. A side table rather than a column on
+-- bg_jobs, because this schema is applied with CREATE TABLE IF NOT EXISTS on every cold
+-- start and there is no way to add a column idempotently.
+--
+-- It exists because /api/remove-bg went asynchronous: the A2A stream is now consumed in
+-- waitUntil, long after the response was sent, so the agent's failure text has nowhere to
+-- be returned to. Without this the browser polls a job that simply never finishes and
+-- learns nothing. One row per job, upserted as the job moves, pruned with the ticket.
+CREATE TABLE IF NOT EXISTS bg_job_notes (
+  job_id     TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL,
+  note       TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `;
 
 /**

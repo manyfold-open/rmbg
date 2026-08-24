@@ -1,70 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import app from '../src/worker/index';
-import { createJobTicket, outputKeyFor, redeemJobTicket } from '../src/worker/job';
+import {
+  createJobTicket,
+  getJobNote,
+  outputKeyFor,
+  pruneJobTickets,
+  redeemJobTicket,
+  setJobNote,
+} from '../src/worker/job';
 import type { Env } from '../src/worker/types';
-import { CUTOUT_PNG_BASE64 } from './fixtures';
-
-/** Enough of D1 to exercise the ticket lifecycle: these tests are about state, not SQL. */
-function makeDb() {
-  const rows = new Map<
-    string,
-    { token: string; status: string; created_at: string; expires_at: string }
-  >();
-  const db = {
-    prepare(sql: string) {
-      return {
-        bind(...args: unknown[]) {
-          return {
-            async run() {
-              if (sql.startsWith('INSERT INTO bg_jobs')) {
-                const [jobId, token, status, createdAt, expiresAt] = args as string[];
-                rows.set(jobId, { token, status, created_at: createdAt, expires_at: expiresAt });
-              } else if (sql.startsWith('UPDATE bg_jobs')) {
-                const [status, jobId] = args as string[];
-                const row = rows.get(jobId);
-                // markInputFetched guards on the current status; honour that here so the
-                // test can prove a late download cannot clobber a delivered result.
-                const guard = sql.match(/AND status = '([a-z]+)'/)?.[1];
-                if (row && (!guard || row.status === guard)) row.status = status;
-              } else if (sql.startsWith('DELETE FROM bg_jobs')) {
-                for (const [id, row] of rows) {
-                  if (Date.parse(row.expires_at) < Date.parse(args[0] as string)) rows.delete(id);
-                }
-              }
-            },
-            async first() {
-              if (!sql.includes('FROM bg_jobs')) return null;
-              const row = rows.get(args[0] as string);
-              return row
-                ? {
-                    token: row.token,
-                    status: row.status,
-                    createdAt: row.created_at,
-                    expiresAt: row.expires_at,
-                  }
-                : null;
-            },
-            async all() {
-              return { results: [] };
-            },
-          };
-        },
-        async run() {},
-        async first() {
-          return null;
-        },
-        async all() {
-          return { results: [] };
-        },
-      };
-    },
-    async batch() {
-      return [];
-    },
-    async exec() {},
-  } as unknown as D1Database;
-  return { db, rows };
-}
+import { CUTOUT_PNG_BASE64, makeJobDb as makeDb } from './fixtures';
 
 function makeR2() {
   const store = new Map<string, { bytes: Uint8Array; contentType: string }>();
@@ -302,6 +247,60 @@ describe('PUT /api/job/:jobId/output', () => {
     await expect(redeemJobTicket(env, ticket.jobId, ticket.token)).rejects.toThrow(
       'already received its result',
     );
+  });
+
+  it('reports the agent note alongside the status', async () => {
+    // The A2A turn now runs in waitUntil, so this note is the only channel by which a
+    // reason reaches the browser at all.
+    const { db } = makeDb();
+    const { bucket } = makeR2();
+    const env = { DB: db, R2_IMAGE: bucket } as Env;
+    const ticket = await createJobTicket(env, 'png');
+
+    await setJobNote(env, ticket.jobId, 'failed', 'python3: No module named PIL');
+
+    const res = await app.request(`/api/job/${ticket.jobId}/status`, {}, env);
+    const body = (await res.json()) as { note: { kind: string; note: string } | null };
+    expect(body.note?.kind).toBe('failed');
+    expect(body.note?.note).toBe('python3: No module named PIL');
+  });
+
+  it('has no note until something writes one', async () => {
+    const { db } = makeDb();
+    const env = { DB: db, R2_IMAGE: makeR2().bucket } as Env;
+    const ticket = await createJobTicket(env, 'png');
+
+    const res = await app.request(`/api/job/${ticket.jobId}/status`, {}, env);
+    expect(((await res.json()) as { note: unknown }).note).toBeNull();
+  });
+
+  it('keeps one note per job, latest wins', async () => {
+    // A job is noted as it moves: a broken stream first, then whatever ended it. Only the
+    // last one is worth showing, and an unbounded log of them would outlive the ticket.
+    const { db, notes } = makeDb();
+    const env = { DB: db } as Env;
+    const ticket = await createJobTicket(env, 'png');
+
+    await setJobNote(env, ticket.jobId, 'progress', '連線中斷,繼續等待');
+    await setJobNote(env, ticket.jobId, 'failed', 'Agent 沒有上傳結果');
+
+    expect(notes.size).toBe(1);
+    expect(await getJobNote(env, ticket.jobId)).toMatchObject({
+      kind: 'failed',
+      note: 'Agent 沒有上傳結果',
+    });
+  });
+
+  it('drops notes whose job has been pruned', async () => {
+    const { db, rows, notes } = makeDb();
+    const env = { DB: db } as Env;
+    const ticket = await createJobTicket(env, 'png');
+    await setJobNote(env, ticket.jobId, 'failed', 'long gone');
+
+    rows.delete(ticket.jobId);
+    await pruneJobTickets(env);
+
+    expect(notes.size).toBe(0);
   });
 
   it('404s the status of a job that does not exist', async () => {
