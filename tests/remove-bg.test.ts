@@ -332,12 +332,17 @@ describe('remove-bg handler', () => {
 describe('assertUsableCutout', () => {
   const PLACEHOLDER_1X1 = PLACEHOLDER_1X1_BASE64;
 
-  /** A real PNG of the given size, big enough to clear both thresholds. */
-  const pngOf = (width: number, height: number): string => {
-    const ihdr = new Uint8Array(24);
+  /**
+   * A PNG header of the given size, big enough to clear both thresholds. colorType is the
+   * IHDR byte that decides whether alpha is even representable: 6 = RGBA, 2 = plain RGB.
+   */
+  const pngOf = (width: number, height: number, colorType = 6): string => {
+    const ihdr = new Uint8Array(26);
     ihdr.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
     new DataView(ihdr.buffer).setUint32(16, width);
     new DataView(ihdr.buffer).setUint32(20, height);
+    ihdr[24] = 8; // bit depth
+    ihdr[25] = colorType;
     const padded = new Uint8Array(2048);
     padded.set(ihdr, 0);
     let binary = '';
@@ -363,6 +368,23 @@ describe('assertUsableCutout', () => {
 
   it('accepts a real cutout', () => {
     expect(() => assertUsableCutout(pngOf(96, 96), 'rmbg')).not.toThrow();
+  });
+
+  it('rejects an opaque RGB PNG, however large and detailed', () => {
+    // Production, 2026-08-24: asked for transparency, the image model returned an 848 KB
+    // colour-type-2 PNG with a checkerboard *painted* into it. Big, sharp, and not a cutout.
+    expect(() => assertUsableCutout(pngOf(1264, 842, 2), 'rmbg')).toThrow('沒有透明通道');
+  });
+
+  it('rejects greyscale without alpha and accepts greyscale with it', () => {
+    expect(() => assertUsableCutout(pngOf(96, 96, 0), 'rmbg')).toThrow('沒有透明通道');
+    expect(() => assertUsableCutout(pngOf(96, 96, 4), 'rmbg')).not.toThrow();
+  });
+
+  it('leaves non-PNG payloads to the size check alone', () => {
+    // pngHasAlpha returns null for anything it cannot parse, which must not become a reject.
+    const notPng = btoa('x'.repeat(2048));
+    expect(() => assertUsableCutout(notPng, 'rmbg')).not.toThrow();
   });
 
   it('reads PNG dimensions from the IHDR chunk', () => {

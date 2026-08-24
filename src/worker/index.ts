@@ -37,14 +37,15 @@ import {
   verifyAgent,
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
-import { handleRemoveBg, type RemoveBgRequest } from './remove-bg';
+import { assertUsableCutoutBytes, handleRemoveBg, type RemoveBgRequest } from './remove-bg';
 import {
   MAX_OUTPUT_BYTES,
+  consumeJobTicket,
   getJobStatus,
   jobIdFromInputKey,
   markInputFetched,
   outputKeyFor,
-  redeemJobTicket,
+  verifyJobTicket,
 } from './job';
 import { loadAppSettings, saveAppSettings } from './settings-manager';
 
@@ -223,7 +224,8 @@ app.put('/api/job/:jobId/output', async (c) => {
     throw new HttpError(404, 'r2_not_configured', 'Cloudflare R2 is not configured.');
   }
   const jobId = c.req.param('jobId');
-  await redeemJobTicket(c.env, jobId, c.req.header('x-job-token') ?? '');
+  // Verify now, spend later: a malformed upload should leave the agent able to retry.
+  await verifyJobTicket(c.env, jobId, c.req.header('x-job-token') ?? '');
 
   const declared = Number(c.req.header('content-length') ?? '0');
   if (declared > MAX_OUTPUT_BYTES) {
@@ -243,8 +245,14 @@ app.put('/api/job/:jobId/output', async (c) => {
     throw new HttpError(415, 'not_an_image', 'Result must be uploaded with an image content-type.');
   }
 
+  // Judge the bytes, not the header. The agent has already once declared image/png while
+  // uploading a JPEG; telling it so here, at the moment of upload, is far more useful than
+  // failing the job minutes later.
+  assertUsableCutoutBytes(bytes, 'uploader');
+
+  await consumeJobTicket(c.env, jobId);
   await c.env.R2_IMAGE.put(outputKeyFor(jobId), bytes, {
-    httpMetadata: { contentType },
+    httpMetadata: { contentType: 'image/png' },
     customMetadata: { label: 'agent cutout', createdAt: new Date().toISOString() },
   });
   return c.json({ ok: true, bytes: bytes.byteLength });

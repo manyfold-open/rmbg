@@ -63,10 +63,14 @@ export async function createJobTicket(env: Env, extension: string): Promise<JobT
 }
 
 /**
- * Authorize an upload. Throws rather than returning a boolean so that every rejection
- * reaches the client as the same shaped error, and so a caller cannot forget to check.
+ * Check a ticket without spending it.
+ *
+ * Split from consumption so the upload can be *validated* before the ticket dies. A
+ * rejected upload — wrong format, empty body, too large — should leave the agent able to
+ * fix it and try again within the ten minutes, rather than killing the job on its first
+ * mistake. Only a stored result spends the ticket.
  */
-export async function redeemJobTicket(env: Env, jobId: string, presented: string): Promise<void> {
+export async function verifyJobTicket(env: Env, jobId: string, presented: string): Promise<void> {
   const row = await env.DB.prepare(
     'SELECT token, status, expires_at AS expiresAt FROM bg_jobs WHERE job_id = ?',
   )
@@ -85,10 +89,19 @@ export async function redeemJobTicket(env: Env, jobId: string, presented: string
   if (Date.parse(row.expiresAt) < Date.now()) {
     throw new HttpError(403, 'job_token_invalid', 'Invalid or expired upload ticket.');
   }
+}
 
+/** Spend the ticket. Only call this once the result is known-good and about to be stored. */
+export async function consumeJobTicket(env: Env, jobId: string): Promise<void> {
   await env.DB.prepare('UPDATE bg_jobs SET status = ? WHERE job_id = ?')
     .bind('uploaded', jobId)
     .run();
+}
+
+/** Verify and spend in one step. */
+export async function redeemJobTicket(env: Env, jobId: string, presented: string): Promise<void> {
+  await verifyJobTicket(env, jobId, presented);
+  await consumeJobTicket(env, jobId);
 }
 
 /** `job_<32 hex>_input.<ext>` — the staged input for a job. Returns the job id, or null. */

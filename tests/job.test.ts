@@ -213,6 +213,42 @@ describe('PUT /api/job/:jobId/output', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a JPEG upload and leaves the ticket usable for a retry', async () => {
+    // The agent's first real result was a JPEG sent as content-type image/png. Reject it
+    // at the door — and do not spend the ticket, so the same job can still succeed.
+    const { db } = makeDb();
+    const { bucket, store } = makeR2();
+    const env = { DB: db, R2_IMAGE: bucket } as Env;
+    const ticket = await createJobTicket(env, 'png');
+
+    const jpeg = new Uint8Array(2048);
+    jpeg.set([0xff, 0xd8, 0xff, 0xe0], 0);
+
+    const bad = await app.request(
+      `/api/job/${ticket.jobId}/output`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'image/png', 'x-job-token': ticket.token },
+        body: jpeg,
+      },
+      env,
+    );
+    expect(bad.status).toBe(502);
+    expect(store.size).toBe(0);
+
+    const retry = await app.request(
+      `/api/job/${ticket.jobId}/output`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'image/png', 'x-job-token': ticket.token },
+        body: png,
+      },
+      env,
+    );
+    expect(retry.status).toBe(200);
+    expect(store.has(outputKeyFor(ticket.jobId))).toBe(true);
+  });
+
   it('records that the agent downloaded the input, and still accepts the upload after', async () => {
     // Serving the input is the only free signal that the agent reached step 1. It must not
     // burn the ticket: fetching is progress, not delivery.

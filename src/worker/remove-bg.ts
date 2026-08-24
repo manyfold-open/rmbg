@@ -75,7 +75,13 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * The instruction the agent receives. The image also rides along as an A2A FilePart so the
  * agent can *see* it, but seeing it is not enough: it reported it cannot materialise those
  * bytes onto its filesystem, and its card only allows text back. So the real work is done
- * against URLs, and the prompt spells out the two commands rather than describing them.
+ * against URLs, and the prompt spells out the commands rather than describing them.
+ *
+ * Step 2 asks for a flat magenta background rather than transparency on purpose. Asked for
+ * transparency directly, the model painted a grey-and-white checkerboard — the *picture* of
+ * transparency — as opaque RGB pixels, because an image generator has no alpha channel to
+ * write to. A uniform colour is something it can actually produce, and turning one colour
+ * into alpha is arithmetic the agent can do exactly.
  */
 function agentInstructions(inputUrl: string, uploadUrl: string, token: string, model: string): string {
   return `Remove the background from an image. Do the work with shell commands — do not answer from the attached preview alone.
@@ -83,14 +89,38 @@ function agentInstructions(inputUrl: string, uploadUrl: string, token: string, m
 STEP 1 — download the image:
   curl -sS -o /tmp/input.png '${inputUrl}'
 
-STEP 2 — remove the background using ${model}.
-Send /tmp/input.png to the ${model} image model and ask it to return the identical image with
-the background fully removed and a real alpha channel. Preserve the subject's own pixels:
-colours, texture, hair, fur, edge detail and proportions. Do not redraw, regenerate, restyle,
-upscale, crop or recompose, and keep the output the same pixel dimensions as the input.
-Write the result to /tmp/output.png as a PNG with transparency.
+STEP 2 — use ${model} to replace the background with flat magenta.
+Send /tmp/input.png to ${model} and ask for the same image with every background pixel
+replaced by solid pure magenta, RGB exactly (255, 0, 255). Save its output as /tmp/gen.png.
 
-STEP 3 — upload the result:
+  - Do NOT ask for transparency, and do NOT accept a grey-and-white checkerboard. A
+    checkerboard is a drawing of transparency, not transparency, and it will be rejected.
+  - The background must be one flat colour: no gradient, no shadow, no vignette, no texture.
+  - Keep the subject's own pixels: colours, texture, hair, fur, edge detail, proportions.
+    Do not restyle, recolour, crop or recompose the subject.
+  - If the subject itself contains magenta, use solid pure green (0, 255, 0) instead and use
+    that colour in step 3.
+
+STEP 3 — turn that flat colour into a real alpha channel, at the original size:
+
+  python3 - <<'EOF'
+  from PIL import Image
+  import numpy as np
+  src = Image.open('/tmp/input.png').convert('RGB')
+  gen = Image.open('/tmp/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
+  rgb = np.array(gen).astype(np.int16)
+  key = np.array([255, 0, 255])          # match the colour you asked for in step 2
+  dist = np.abs(rgb - key).sum(axis=2)
+  alpha = np.clip((dist - 60) * 4, 0, 255).astype(np.uint8)
+  Image.fromarray(np.dstack([np.array(gen), alpha]), 'RGBA').save('/tmp/output.png')
+  EOF
+
+If PIL or numpy is unavailable, the equivalent with ImageMagick is:
+  convert /tmp/gen.png -resize "$(identify -format '%wx%h!' /tmp/input.png)" \\
+    -fuzz 20% -transparent magenta /tmp/output.png
+If neither tool exists, do not improvise and do not upload — say so in your reply instead.
+
+STEP 4 — upload the result:
   curl -sS -X PUT --data-binary @/tmp/output.png \\
     -H 'content-type: image/png' \\
     -H 'x-job-token: ${token}' \\
@@ -101,13 +131,14 @@ A 200 response means the upload succeeded. Then reply with the single word DONE.
 The upload is how the result gets back — your reply text is not the delivery channel, so do
 not paste base64 into it. If any step fails, reply with plain text saying exactly which
 command failed and what it printed. An honest failure is useful; a placeholder image, a 1x1
-PNG, or the input returned unchanged is worse than nothing and will be rejected.`;
+PNG, a checkerboard, or the input returned unchanged is worse than nothing and will be
+rejected.`;
 }
 
 /** PNG dimensions straight out of the IHDR chunk. Null for anything that is not a PNG. */
 export function pngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
   const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
-  if (bytes.length < 24) return null;
+  if (bytes.length < 26) return null;
   for (let i = 0; i < signature.length; i++) {
     if (bytes[i] !== signature[i]) return null;
   }
@@ -116,10 +147,45 @@ export function pngDimensions(bytes: Uint8Array): { width: number; height: numbe
 }
 
 /**
+ * Can this PNG express transparency at all?
+ *
+ * IHDR byte 25 is the colour type: 6 = RGBA, 4 = grey+alpha, 3 = palette (transparent only
+ * if a tRNS chunk is present), 2 = RGB, 0 = greyscale. Types 0 and 2 have nowhere to store
+ * alpha, so a "cutout" in one of them is opaque by construction.
+ *
+ * This is not pedantry about file formats. Asked for a transparent background, the image
+ * model returned an opaque RGB PNG with a grey-and-white checkerboard painted into it, and
+ * every other check passed it: right magic bytes, sensible dimensions, 848 KB of real
+ * detail. Colour type is what tells the two apart.
+ */
+export function pngHasAlpha(bytes: Uint8Array): boolean | null {
+  if (!pngDimensions(bytes)) return null;
+  const colorType = bytes[25];
+  if (colorType === 6 || colorType === 4) return true;
+  if (colorType === 3) {
+    // Look for a tRNS chunk in the header region rather than walking every chunk: it is
+    // required to appear before the first IDAT.
+    const head = bytes.subarray(0, Math.min(bytes.length, 4096));
+    for (let i = 0; i + 3 < head.length; i++) {
+      if (head[i] === 0x74 && head[i + 1] === 0x52 && head[i + 2] === 0x4e && head[i + 3] === 0x53) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
  * An agent that never received the image still has to answer something, and in practice
  * it answers with a 1x1 transparent PNG. That used to sail through as a success: saved to
  * R2, HTTP 200, an invisible "result" for the user. Catch it here instead.
  */
+/** JPEG has no alpha channel in any variant, so a JPEG cutout is a contradiction. */
+export function isJpeg(bytes: Uint8Array): boolean {
+  return bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+}
+
 export function assertUsableCutout(base64Data: string, agentName: string): void {
   let bytes: Uint8Array;
   try {
@@ -131,6 +197,21 @@ export function assertUsableCutout(base64Data: string, agentName: string): void 
       502,
       'agent_bad_image',
       `Manyfold Agent ("${agentName}") 回傳的圖片資料無法解碼。`,
+    );
+  }
+  assertUsableCutoutBytes(bytes, agentName);
+}
+
+export function assertUsableCutoutBytes(bytes: Uint8Array, agentName: string): void {
+  // Check the container before the contents. The first real cutout the agent uploaded was
+  // 848 KB of genuine detail — and a JPEG, sent with content-type image/png. Every
+  // size-and-dimension test passed it, because the problem was not the picture.
+  if (isJpeg(bytes)) {
+    throw new HttpError(
+      502,
+      'agent_opaque_image',
+      `Manyfold Agent ("${agentName}") 回傳的是 JPEG。JPEG 沒有透明通道,不可能是去背結果,` +
+        `請輸出 PNG(RGBA)。`,
     );
   }
 
@@ -149,6 +230,15 @@ export function assertUsableCutout(base64Data: string, agentName: string): void 
       'agent_placeholder_image',
       `Manyfold Agent ("${agentName}") 回傳了佔位圖而非去背結果 (${detail})。` +
         `這通常表示 Agent 沒有收到圖片,或它無法輸出圖片。`,
+    );
+  }
+
+  if (pngHasAlpha(bytes) === false) {
+    throw new HttpError(
+      502,
+      'agent_opaque_image',
+      `Manyfold Agent ("${agentName}") 回傳的 PNG 沒有透明通道,不算去背結果。` +
+        `影像模型無法直接輸出 alpha,常見的失敗是把「透明」畫成灰白格子圖案。`,
     );
   }
 }
