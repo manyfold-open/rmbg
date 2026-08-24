@@ -797,6 +797,7 @@ hr.divider {
 .sub-panel-tabs {
   display: flex;
   gap: 4px;
+  margin-top: 16px;
   margin-bottom: var(--space-lg);
   background: var(--surface-subtle);
   padding: 4px;

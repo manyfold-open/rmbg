@@ -20,5 +20,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src/worker", "src/shared", "src/app/types", "tests"]
+  "include": ["src/worker", "src/shared", "src/app/types", "src/app/history.ts", "tests"]
 }
