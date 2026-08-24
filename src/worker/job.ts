@@ -77,7 +77,9 @@ export async function redeemJobTicket(env: Env, jobId: string, presented: string
   if (!row || !safeEqual(presented, row.token)) {
     throw new HttpError(403, 'job_token_invalid', 'Invalid or expired upload ticket.');
   }
-  if (row.status !== 'pending') {
+  // 'fetched' is still an unredeemed ticket — it only records that the agent got as far as
+  // downloading the input. Only 'uploaded' means the result already arrived.
+  if (row.status !== 'pending' && row.status !== 'fetched') {
     throw new HttpError(409, 'job_already_uploaded', 'This job already received its result.');
   }
   if (Date.parse(row.expiresAt) < Date.now()) {
@@ -87,6 +89,39 @@ export async function redeemJobTicket(env: Env, jobId: string, presented: string
   await env.DB.prepare('UPDATE bg_jobs SET status = ? WHERE job_id = ?')
     .bind('uploaded', jobId)
     .run();
+}
+
+/** `job_<32 hex>_input.<ext>` — the staged input for a job. Returns the job id, or null. */
+export function jobIdFromInputKey(key: string): string | null {
+  const match = key.match(/^job_([a-f0-9]{32})_input\.[a-z0-9]+$/i);
+  return match ? match[1] : null;
+}
+
+/**
+ * Record that the agent downloaded the input.
+ *
+ * This is the only observable the agent gives us for free — it requires no cooperation
+ * from the agent, no extra prompt step, and no schema change. It answers the one question
+ * that a silent failure otherwise leaves open: did the agent reach the network at all, or
+ * did it fall over before step 1? Best-effort, so serving the image never fails on it.
+ */
+export async function markInputFetched(env: Env, jobId: string): Promise<void> {
+  await env.DB.prepare("UPDATE bg_jobs SET status = ? WHERE job_id = ? AND status = 'pending'")
+    .bind('fetched', jobId)
+    .run()
+    .catch(() => undefined);
+}
+
+/** What a caller may know about a job. Deliberately never includes the token. */
+export async function getJobStatus(
+  env: Env,
+  jobId: string,
+): Promise<{ status: string; createdAt: string; expiresAt: string } | null> {
+  return await env.DB.prepare(
+    'SELECT status, created_at AS createdAt, expires_at AS expiresAt FROM bg_jobs WHERE job_id = ?',
+  )
+    .bind(jobId)
+    .first<{ status: string; createdAt: string; expiresAt: string }>();
 }
 
 /** Best-effort cleanup of expired tickets. Failure here must never fail a request. */

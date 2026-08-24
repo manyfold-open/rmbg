@@ -6,7 +6,10 @@ import { CUTOUT_PNG_BASE64 } from './fixtures';
 
 /** Enough of D1 to exercise the ticket lifecycle: these tests are about state, not SQL. */
 function makeDb() {
-  const rows = new Map<string, { token: string; status: string; expires_at: string }>();
+  const rows = new Map<
+    string,
+    { token: string; status: string; created_at: string; expires_at: string }
+  >();
   const db = {
     prepare(sql: string) {
       return {
@@ -14,12 +17,15 @@ function makeDb() {
           return {
             async run() {
               if (sql.startsWith('INSERT INTO bg_jobs')) {
-                const [jobId, token, status, , expiresAt] = args as string[];
-                rows.set(jobId, { token, status, expires_at: expiresAt });
+                const [jobId, token, status, createdAt, expiresAt] = args as string[];
+                rows.set(jobId, { token, status, created_at: createdAt, expires_at: expiresAt });
               } else if (sql.startsWith('UPDATE bg_jobs')) {
                 const [status, jobId] = args as string[];
                 const row = rows.get(jobId);
-                if (row) row.status = status;
+                // markInputFetched guards on the current status; honour that here so the
+                // test can prove a late download cannot clobber a delivered result.
+                const guard = sql.match(/AND status = '([a-z]+)'/)?.[1];
+                if (row && (!guard || row.status === guard)) row.status = status;
               } else if (sql.startsWith('DELETE FROM bg_jobs')) {
                 for (const [id, row] of rows) {
                   if (Date.parse(row.expires_at) < Date.parse(args[0] as string)) rows.delete(id);
@@ -29,7 +35,14 @@ function makeDb() {
             async first() {
               if (!sql.includes('FROM bg_jobs')) return null;
               const row = rows.get(args[0] as string);
-              return row ? { token: row.token, status: row.status, expiresAt: row.expires_at } : null;
+              return row
+                ? {
+                    token: row.token,
+                    status: row.status,
+                    createdAt: row.created_at,
+                    expiresAt: row.expires_at,
+                  }
+                : null;
             },
             async all() {
               return { results: [] };
@@ -64,8 +77,15 @@ function makeR2() {
       if (!hit) return null;
       return {
         arrayBuffer: async () => hit.bytes.buffer,
+        body: hit.bytes,
+        httpEtag: 'test-etag',
+        writeHttpMetadata: (headers: Headers) => headers.set('content-type', hit.contentType),
         httpMetadata: { contentType: hit.contentType },
       };
+    },
+    async head(key: string) {
+      const hit = store.get(key);
+      return hit ? { size: hit.bytes.byteLength } : null;
     },
   } as unknown as R2Bucket;
   return { bucket, store };
@@ -191,6 +211,67 @@ describe('PUT /api/job/:jobId/output', () => {
     );
 
     expect(res.status).toBe(400);
+  });
+
+  it('records that the agent downloaded the input, and still accepts the upload after', async () => {
+    // Serving the input is the only free signal that the agent reached step 1. It must not
+    // burn the ticket: fetching is progress, not delivery.
+    const { db } = makeDb();
+    const { bucket, store } = makeR2();
+    const env = { DB: db, R2_IMAGE: bucket } as Env;
+    const ticket = await createJobTicket(env, 'png');
+    await bucket.put(ticket.inputKey, png, { httpMetadata: { contentType: 'image/png' } });
+
+    const before = await app.request(`/api/job/${ticket.jobId}/status`, {}, env);
+    expect(((await before.json()) as { status: string }).status).toBe('pending');
+
+    const fetched = await app.request(`/api/r2/${ticket.inputKey}`, {}, env);
+    expect(fetched.status).toBe(200);
+
+    const after = await app.request(`/api/job/${ticket.jobId}/status`, {}, env);
+    expect(((await after.json()) as { status: string }).status).toBe('fetched');
+
+    const upload = await app.request(
+      `/api/job/${ticket.jobId}/output`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'image/png', 'x-job-token': ticket.token },
+        body: png,
+      },
+      env,
+    );
+    expect(upload.status).toBe(200);
+
+    const done = await app.request(`/api/job/${ticket.jobId}/status`, {}, env);
+    const body = (await done.json()) as { status: string; output: { size: number } | null };
+    expect(body.status).toBe('uploaded');
+    expect(body.output?.size).toBe(png.byteLength);
+    expect(store.has(outputKeyFor(ticket.jobId))).toBe(true);
+  });
+
+  it('does not let a late input download reopen a delivered job', async () => {
+    // The agent may re-download after uploading. If that reset the row to 'fetched' the
+    // ticket would come back to life and a second upload could overwrite the result.
+    const { db } = makeDb();
+    const { bucket } = makeR2();
+    const env = { DB: db, R2_IMAGE: bucket } as Env;
+    const ticket = await createJobTicket(env, 'png');
+    await bucket.put(ticket.inputKey, png, { httpMetadata: { contentType: 'image/png' } });
+
+    await redeemJobTicket(env, ticket.jobId, ticket.token);
+    await app.request(`/api/r2/${ticket.inputKey}`, {}, env);
+
+    const status = await app.request(`/api/job/${ticket.jobId}/status`, {}, env);
+    expect(((await status.json()) as { status: string }).status).toBe('uploaded');
+    await expect(redeemJobTicket(env, ticket.jobId, ticket.token)).rejects.toThrow(
+      'already received its result',
+    );
+  });
+
+  it('404s the status of a job that does not exist', async () => {
+    const { db } = makeDb();
+    const res = await app.request(`/api/job/${'a'.repeat(32)}/status`, {}, { DB: db } as Env);
+    expect(res.status).toBe(404);
   });
 
   it('still demands an Origin on other mutations', async () => {

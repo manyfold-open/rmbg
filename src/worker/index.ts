@@ -38,7 +38,14 @@ import {
 } from './connect';
 import { getConversation, handleChatTurn, resetConversation } from './chat';
 import { handleRemoveBg, type RemoveBgRequest } from './remove-bg';
-import { MAX_OUTPUT_BYTES, outputKeyFor, redeemJobTicket } from './job';
+import {
+  MAX_OUTPUT_BYTES,
+  getJobStatus,
+  jobIdFromInputKey,
+  markInputFetched,
+  outputKeyFor,
+  redeemJobTicket,
+} from './job';
 import { loadAppSettings, saveAppSettings } from './settings-manager';
 
 const SERVICE = 'cloudflare-worker-starter';
@@ -48,6 +55,10 @@ const app = new Hono<{ Bindings: Env }>();
 /** PUT /api/job/:jobId/output — the agent's upload leg, authorized by its ticket instead. */
 const isJobUpload = (method: string, path: string): boolean =>
   method === 'PUT' && /^\/api\/job\/[a-f0-9]{32}\/output$/.test(path);
+
+/** GET /api/job/:jobId/status — public for the same reason /api/remove-bg is. */
+const isJobStatus = (method: string, path: string): boolean =>
+  method === 'GET' && /^\/api\/job\/[a-f0-9]{32}\/status$/.test(path);
 
 /* ───────── middleware ───────── */
 
@@ -98,6 +109,7 @@ app.use('/api/*', async (c, next) => {
     path !== '/api/state' &&
     path !== '/api/remove-bg' &&
     !isJobUpload(c.req.method, path) &&
+    !isJobStatus(c.req.method, path) &&
     !isPublicR2Image &&
     !adminHeaderOk(c)
   ) {
@@ -238,6 +250,30 @@ app.put('/api/job/:jobId/output', async (c) => {
   return c.json({ ok: true, bytes: bytes.byteLength });
 });
 
+/**
+ * How far a job got. No token required: the id is 128 random bits, it reveals only a
+ * status word, and being able to ask "did my upload work" is what makes a silent agent
+ * failure diagnosable at all.
+ *
+ *   pending  — ticket issued, the agent has not downloaded the input
+ *   fetched  — the agent downloaded the input but has not uploaded a result
+ *   uploaded — the result arrived
+ */
+app.get('/api/job/:jobId/status', async (c) => {
+  const jobId = c.req.param('jobId');
+  const row = await getJobStatus(c.env, jobId);
+  if (!row) {
+    throw new HttpError(404, 'job_not_found', 'No such job.');
+  }
+  const output = c.env.R2_IMAGE ? await c.env.R2_IMAGE.head(outputKeyFor(jobId)) : null;
+  return c.json({
+    status: row.status,
+    createdAt: row.createdAt,
+    expiresAt: row.expiresAt,
+    output: output ? { key: outputKeyFor(jobId), size: output.size } : null,
+  });
+});
+
 /* ───────── settings & r2 routes ───────── */
 
 app.get('/api/settings', async (c) => {
@@ -275,6 +311,11 @@ app.get('/api/r2/:key', async (c) => {
   const object = await c.env.R2_IMAGE.get(key);
   if (!object) {
     throw new HttpError(404, 'not_found', 'Image not found in R2 storage.');
+  }
+  // Serving a job input means the agent got as far as step 1. Nothing else tells us that.
+  const inputJobId = jobIdFromInputKey(key);
+  if (inputJobId) {
+    await markInputFetched(c.env, inputJobId);
   }
   const headers = new Headers();
   object.writeHttpMetadata(headers);
