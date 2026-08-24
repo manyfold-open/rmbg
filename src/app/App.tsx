@@ -12,10 +12,9 @@ import type { BgConfig, PostProcessConfig, HistoryItem, ToastMessage } from './t
 import { DEFAULT_POST_PROCESS } from './types/studio';
 import { api } from './api';
 import { waitForJobResult } from './jobs';
+import { addHistoryItem, clearHistoryStore, createHistoryId, loadHistory } from './history';
 
 import { compressImageForAI, createCutoutFromSvgPath } from './utils/image';
-
-const STORAGE_KEY_HISTORY = 'rmbg_atelier_history';
 
 export function App() {
   const [currentPath, setCurrentPath] = useState<string>(() => window.location.pathname);
@@ -72,14 +71,7 @@ export function App() {
   const [postProcess, setPostProcess] = useState<PostProcessConfig>(DEFAULT_POST_PROCESS);
 
   // History & Toast State
-  const [history, setHistory] = useState<HistoryItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_HISTORY);
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [history, setHistory] = useState<HistoryItem[]>([]);
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [forceShowOriginal, setForceShowOriginal] = useState<boolean>(false);
@@ -97,30 +89,53 @@ export function App() {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  const saveToHistory = (item: Omit<HistoryItem, 'id' | 'timestamp'>) => {
+  useEffect(() => {
+    let disposed = false;
+
+    const refreshHistory = async () => {
+      try {
+        const items = await loadHistory();
+        if (!disposed) setHistory(items);
+      } catch (err) {
+        console.error('Session history load failed:', err);
+        if (!disposed) showToast('Session history could not be loaded.', 'warning');
+      }
+    };
+
+    void refreshHistory();
+    const cleanupTimer = window.setInterval(() => void refreshHistory(), 60_000);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(cleanupTimer);
+    };
+  }, [showToast]);
+
+  const saveToHistory = async (item: Omit<HistoryItem, 'id' | 'timestamp'>) => {
     const newItem: HistoryItem = {
       ...item,
-      id: `hist-${Date.now()}`,
+      id: createHistoryId(),
       timestamp: Date.now(),
     };
-    setHistory((prev) => {
-      const filtered = prev.filter((h) => h.originalImage !== item.originalImage);
-      const updated = [newItem, ...filtered].slice(0, 8); // Keep last 8 items
-      try {
-        localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(updated));
-      } catch {
-        // Fallback gracefully if quota exceeded
-      }
-      return updated;
-    });
+
+    try {
+      const updated = await addHistoryItem(newItem);
+      setHistory(updated);
+    } catch (err) {
+      console.error('Session history save failed:', err);
+      showToast('This result could not be saved to Session history.', 'warning');
+    }
   };
 
-  const clearHistory = () => {
-    setHistory([]);
+  const clearHistory = async () => {
     try {
-      localStorage.removeItem(STORAGE_KEY_HISTORY);
-    } catch {}
-    showToast('All history has been cleared', 'info');
+      await clearHistoryStore();
+      setHistory([]);
+      showToast('All history has been cleared', 'info');
+    } catch (err) {
+      console.error('Session history clear failed:', err);
+      showToast('Session history could not be cleared.', 'warning');
+    }
   };
 
   const handleImageSelected = async (dataUrl: string) => {
@@ -179,7 +194,7 @@ export function App() {
 
         setCutoutImage(cutout);
         setSvgPath(null);
-        saveToHistory({
+        await saveToHistory({
           originalImage: dataUrl,
           cutoutImage: cutout,
           svgPath: null,
@@ -201,7 +216,7 @@ export function App() {
         setCutoutImage(data.image);
         setSvgPath(null);
 
-        saveToHistory({
+        await saveToHistory({
           originalImage: dataUrl,
           cutoutImage: data.image,
           svgPath: null,
@@ -214,7 +229,7 @@ export function App() {
         const generatedCutout = await createCutoutFromSvgPath(dataUrl, extractedSvgPath);
         setCutoutImage(generatedCutout);
 
-        saveToHistory({
+        await saveToHistory({
           originalImage: dataUrl,
           cutoutImage: generatedCutout,
           svgPath: extractedSvgPath,
