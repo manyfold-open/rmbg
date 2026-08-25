@@ -1,7 +1,7 @@
 ---
 name: rmbg-background-removal
 version: 1.0.0
-description: Remove the background from an image handed off by the rmbg Cloudflare Worker (https://rmbg.zack-chen.workers.dev) over A2A. Use this whenever an incoming A2A message's text part contains an input URL, an upload URL, and a job token for background removal — that shape of request is always this job, never anything else. Produces a real RGBA cutout via gemini-3.1-flash-image plus a local chroma-key step; never returns SVG, a mask, or prose in place of pixels.
+description: Remove the background from an image handed off by the rmbg Cloudflare Worker (https://rmbg.zack-chen.workers.dev) over A2A. Use this whenever an incoming A2A message's text part contains an input URL, an upload URL, and a job token for background removal — that shape of request is always this job, never anything else. Produces a real RGBA cutout by rendering the subject over white and over black with gemini-3.1-flash-image and solving for alpha locally; never returns SVG, a mask, or prose in place of pixels.
 ---
 
 # rmbg background removal
@@ -9,7 +9,8 @@ description: Remove the background from an image handed off by the rmbg Cloudfla
 You remove backgrounds from images for the rmbg Worker, using the Gemini API
 **image-generation** model **`gemini-3.1-flash-image`** (Nano Banana 2), called via
 `generateContent`. One image per request, no conversation. Nobody reads your prose — your
-reply is consumed by a program, so it only needs a final `DONE` or an honest failure message.
+reply is consumed by a program, so it only needs a final `DONE`, the three diagnostic lines
+steps 2 and 3 print, or an honest failure message.
 
 ## The image does not travel over A2A
 
@@ -59,111 +60,173 @@ find /tmp -maxdepth 1 -type d -name 'rmbg-*' -mmin +60 -exec rm -rf {} + 2>/dev/
 curl -sS -o <work dir>/input.png '<input URL>'
 ```
 
-**Step 1.5 — pick a background colour that is nothing like this subject.** A fixed colour
-(always magenta) used to be asked for unconditionally, and it failed on any subject whose own
-colours sit close to magenta — a pink toy, for instance: every pixel near that hue picked up
-partial alpha from the plain distance-to-key formula, and un-mixing bled key colour into it,
-leaving a visible tinted ring around the subject in production on 2026-08-24. Compute the
-safest colour for *this* photo instead of guessing:
+**Step 2 — render the subject twice: once over white, once over black.** Save them as
+`<work dir>/white.png` and `<work dir>/black.png`. Run this exactly as written:
 
 ```bash
 python3 - <<'EOF'
+from google import genai
+from google.genai import types
 from PIL import Image
-import numpy as np
+import sys
 D = '<work dir>'
-img = np.array(Image.open(D + '/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
-if len(img) > 20000:
-    img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
-candidates = {
-    'magenta': (255, 0, 255), 'green': (0, 255, 0), 'cyan': (0, 255, 255),
-    'yellow': (255, 255, 0), 'blue': (0, 0, 255), 'red': (255, 0, 0),
-}
-scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
-          for name, rgb in candidates.items()}
-name = max(scores, key=scores.get)
-r, g, b = candidates[name]
-print(f'KEY {name} {r} {g} {b} mindist={scores[name]:.0f}')
+client = genai.Client()
+
+def gen(src, out, instruction):
+    data = open(src, 'rb').read()
+    mime = 'image/' + (Image.open(src).format or 'PNG').lower()
+    r = client.models.generate_content(
+        model='gemini-3.1-flash-image',
+        contents=[types.Part.from_bytes(data=data, mime_type=mime), instruction],
+        config=types.GenerateContentConfig(
+            image_config=types.ImageConfig(image_size='2K'),
+        ),
+    )
+    blob = None
+    for p in r.candidates[0].content.parts:
+        inline = getattr(p, 'inline_data', None)
+        if inline and inline.data:
+            blob = inline.data
+            break
+    if blob is None:
+        sys.exit('NO IMAGE for ' + out + ' :: ' + str(r.candidates[0].finish_reason))
+    open(out, 'wb').write(blob)
+    print('%s %s tokens=%s' % (out.rsplit('/', 1)[-1], Image.open(out).size,
+                               r.usage_metadata.candidates_token_count))
+
+WHITE = ("Replace the entire background with solid pure white, RGB exactly 255,255,255. "
+         "The background is everything that is not the subject, and that includes any area "
+         "fully enclosed by the subject: a hole through it, a gap between its parts, the "
+         "space inside a handle, a loop or a ring. If the backdrop is visible through it, it "
+         "is background and it must come out white too. "
+         "One flat colour: no gradient, no shadow, no reflection, no vignette, no texture. "
+         "Keep the subject pixel-for-pixel identical: same position, same size, same framing, "
+         "same colours, same lighting, same edge detail. Change only the background.")
+BLACK = ("Keep this image exactly as it is and change only the background colour: every pixel "
+         "that is currently pure white background becomes solid pure black, RGB exactly 0,0,0. "
+         "Do not move, resize, recolour, relight or redraw the subject - every subject pixel "
+         "must stay exactly where it is and keep its exact colour. Only the background changes.")
+
+gen(D + '/input.png', D + '/white.png', WHITE)
+gen(D + '/white.png', D + '/black.png', BLACK)
 EOF
 ```
 
-That prints e.g. `KEY cyan 0 255 255 mindist=142`. Use exactly that colour and that `mindist`
-for steps 2 and 3 — do not default to magenta without checking this output. If `mindist` is
-under 100, this subject spans most of the colour wheel and no candidate is fully safe; proceed
-anyway, but check `<work dir>/output.png`'s edges after step 3 and say so honestly if a fringe is
-still visible instead of uploading it silently.
+Three details in there are load-bearing, so do not call the model your own way instead:
 
-**Step 2 — ask `gemini-3.1-flash-image` for a flat background in the colour step 1.5 printed,
-not for transparency.** Save its output as `<work dir>/gen.png`.
+- **The second call edits `white.png`.** It does not start again from `input.png`. Step 3
+  subtracts one frame from the other, and that subtraction only means anything if the subject
+  sits in the same place with the same colours in both. Two independent generations drift, and
+  the drift lands in the alpha channel as a ruined edge.
+- **`imageConfig.imageSize` is `'2K'`, capital K.** Lowercase is rejected. Unset, the API
+  defaults to 1K, and a 1024-wide mask stretched over a 2048-wide photo is a blurred edge you
+  cannot get back. Measured on the live agent 2026-08-25: a 1024×1024 input came back
+  2048×2048 at 1958 candidate tokens, against ~1290 for a 1K frame — the model really renders
+  at 2K rather than upscaling.
+- **Never ask for transparency, and never accept a grey-and-white checkerboard.** An image
+  generator has no alpha channel to write to, so asked for transparency it does the only thing
+  it can: paints a *picture* of transparency as ordinary opaque pixels. A flat colour is
+  something it can genuinely produce.
 
-This is the single most important instruction here, and it is counter-intuitive. An image
-generator has no alpha channel to write to. Asked for a transparent background it will do the
-only thing it can: *paint a picture of transparency* — a grey-and-white checkerboard — as
-ordinary opaque pixels. Ask for something it can actually produce instead:
+**Step 3 — solve for the alpha channel, back at the original size.** This step, not Gemini, is
+what produces the transparency, and it is arithmetic rather than a judgement call:
 
-> the same image, with every background pixel replaced by solid pure `<colour>`, RGB exactly
-> `<r>, <g>, <b>` (the values step 1.5 printed) — one flat colour, no gradient, no shadow, no
-> vignette, no texture
-
-Keep the subject's own pixels: colours, texture, hair, fur, edge detail, proportions. Do not
-restyle, recolour, crop or recompose it.
-
-**Step 3 — convert that flat colour into a real alpha channel, back at the original size.**
-This step, not Gemini, is what produces the transparency.
-
-Two things about which pixels end up in the file. Inside the silhouette, they come from the
-**original**. Only the partly-transparent edge comes from Gemini's frame, with the key colour
-un-mixed back out of it so the boundary carries no colour fringe.
-
-That split is deliberate and it is what makes the result sharp. `gemini-3.1-flash-image` returns
-1024×1024 no matter what it is handed, and it *redraws* the subject rather than returning your
-pixels. An earlier version of this step took every pixel from that frame and stretched it to the
-input's size: measured on a real job, a 2048×2048 input produced a 2048×2048 cutout carrying
-1024×1024 of real detail, upscaled 2×. Every cutout came back soft, and none of them contained
-the photo that was sent. Gemini's frame is here to say **where** the subject is, not to redraw it.
+```
+obs_white = α·F + (1 − α)·255
+obs_black = α·F + (1 − α)·0
+obs_white − obs_black = (1 − α)·255      ← the subject cancels, whatever colour it is
+α = 1 − mean(obs_white − obs_black)/255
+F = obs_black / α
+```
 
 ```bash
 python3 - <<'EOF'
 from PIL import Image
-import numpy as np
+import numpy as np, sys
 D = '<work dir>'
 src = Image.open(D + '/input.png').convert('RGB')
-gen = Image.open(D + '/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
-rgb = np.array(gen).astype(np.float32)
-key = np.array([R, G, B], dtype=np.float32)   # the RGB step 1.5 printed
-mindist = MINDIST                             # the mindist number step 1.5 printed
-dist = np.abs(rgb - key).sum(axis=2)
-lo, hi = 20.0, max(mindist, 21.0)
-alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
-a = (alpha.astype(np.float32) / 255.0)[..., None]
-decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
-rgb_out = np.where(alpha[..., None] < 255, decontam,
-                   np.array(src, dtype=np.float32)).astype(np.uint8)
-Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save(D + '/output.png')
+
+def frame(name):
+    im = Image.open(D + '/' + name).convert('RGB')
+    if abs(im.size[0] / im.size[1] - src.size[0] / src.size[1]) > 0.01:
+        print('WARNING %s is %s but the input is %s, so the model changed the shape of the '
+              'frame and the mask has to be stretched to fit.' % (name, im.size, src.size))
+    if im.size != src.size:
+        im = im.resize(src.size, Image.LANCZOS)
+    return np.array(im).astype(np.float32)
+
+white, black = frame('white.png'), frame('black.png')
+d = np.clip((white - black).mean(axis=2), 0.0, 255.0)
+alpha = 1.0 - d / 255.0
+# Two model calls never return byte-identical subject pixels, so d wobbles a few counts either
+# side of zero across solid parts of the subject. Snap only those last few counts at each end;
+# every fractional alpha in between is the identity above and is left exactly as solved.
+alpha[d <= 8.0] = 1.0
+alpha[d >= 247.0] = 0.0
+a8 = np.round(alpha * 255).astype(np.uint8)
+clear = float((a8 == 0).mean())
+solid = float((a8 == 255).mean())
+print('CHECK transparent=%.2f%% partial=%.2f%% opaque=%.2f%%'
+      % (clear * 100, (1 - clear - solid) * 100, solid * 100))
+if clear < 0.01:
+    sys.exit('THE TWO FRAMES MATCH: only %.2f%% of this came out transparent, so white.png and '
+             'black.png carry the same background and there is nothing to subtract. Redo step 2 '
+             'and check the second call really edited white.png to a black background. Do not '
+             'upload this.' % (clear * 100))
+if solid < 0.001:
+    sys.exit('THE SUBJECT IS GONE: %.2f%% of this is fully opaque, so one of the two frames '
+             'came back blank. Redo step 2. Do not upload this.' % (solid * 100))
+F = black / np.clip(alpha, 1e-3, 1.0)[..., None]
+rgb_out = np.where(a8[..., None] == 255,
+                   np.array(src, dtype=np.float32),
+                   np.clip(F, 0.0, 255.0)).astype(np.uint8)
+Image.fromarray(np.dstack([rgb_out, a8]), 'RGBA').save(D + '/output.png')
 EOF
 ```
 
-Replace `key` and `mindist` above with step 1.5's actual numbers before running, and leave the
-`src` in that `np.where` alone. Getting `mindist` right matters as much as the colour itself: a
-fixed threshold here (an earlier version hardcoded `(dist - 60) * 4`) saturates to fully-opaque
-too early whenever the subject's colour sits anywhere near the key, baking a solid ring of raw
-background colour permanently into the silhouette instead of blending it away. Scaling the ramp
-to the real key-to-subject distance for this photo is what actually removes it — that ring, not
-a soft blur, is what a "colour fringe" from this pipeline actually looks like.
+There is nothing to fill in: no key colour, no threshold, no number to retype. Run it verbatim.
 
-With ImageMagick instead (no spill suppression, use only if PIL/numpy are unavailable; replace
-`<colour>` with the name step 1.5 printed):
+**Why two frames and not one.** Until 2026-08-25 this step keyed a *single* generated frame:
+alpha from a colour distance to a chosen background colour, then `(rgb − key·(1−a))/a` to
+un-mix the spill. Measured against the original on a real production result, that estimate cost:
 
-```bash
-convert <work dir>/gen.png -resize "$(identify -format '%wx%h!' <work dir>/input.png)" \
-  -fuzz 20% -transparent <colour> <work dir>/keyed.png
-convert <work dir>/input.png \( <work dir>/keyed.png -alpha extract \) \
-  -compose CopyOpacity -composite <work dir>/output.png
-```
+| | original | single-frame key | two frames |
+|---|---|---|---|
+| edge ramp | 1 px | 12–14 px | 2 px |
+| partial α | 0.04% | 7.33–10.02% | 0.06% |
+| silhouette | — | IoU 0.9350 (4522 px too fat, 1391 eaten) | IoU 0.9698 (0 too fat, 2610 eaten) |
 
-The second command is what lays the mask onto the original's pixels; without it you ship
-Gemini's redrawing again.
+Both of those columns are the same 2048×2048 image, measured on 2026-08-25, the middle one
+taken straight off the live pipeline. What is left is a boundary about a pixel tighter than the
+original's: the model renders the subject some 1700 px short of the true silhouette in *both*
+frames, with the two frames' centroids agreeing to 0.3 px and their bounding boxes to 2 px — so
+it is the model drawing a slightly tight edge, not the two frames drifting apart.
 
-If neither tool exists, do not improvise and do not upload — say so in your reply.
+The single-frame version also left an enclosed hole in the middle of the subject fully opaque.
+That was not a tuning
+failure: a distance threshold flattens the ramp, the un-mix over-subtracts near the edge (the
+halo) and divides residue by an alpha of ~0.04 out in the background (the scatter of stray
+coloured pixels). Every artefact was a by-product of *estimating* alpha. The identity above
+does not estimate, so none of them have anywhere to come from — and it handles what chroma-key
+structurally cannot, such as a white shirt shot against a white wall, because the subject is
+never identified by its colour at all.
+
+**Why the white instruction defines "background".** It says in so many words that an area
+*enclosed* by the subject — a hole through it, the gap inside a handle or a ring — is still
+background. Leave that out and the model reads an enclosed gap as part of the object and paints
+around it; both frames then agree there, α solves to 1, and the hole is delivered opaque. On the
+bench image that sentence is the difference between 4387 opaque pixels in the middle of the
+flower and α=0 across all 4387, and it is the whole of the "too fat" count above. It says what
+background *means*; it is not a hint about one picture.
+
+**Which pixels end up in the file.** Inside the silhouette they come from the **original**;
+only the partly-transparent edge comes from the solved frame. `gemini-3.1-flash-image`
+*redraws* the subject rather than returning your pixels, so a cutout made from its output is a
+picture of the subject, not the photo that was sent. The generated frames say **where** the
+subject is and **how much** of it is there. They do not supply what it looks like.
+
+If PIL, numpy or google-genai is unavailable, do not improvise and do not upload — say which
+import failed in your reply.
 
 ```bash
 # 4. Upload the result.
@@ -180,7 +243,10 @@ differ — that is the safety net under the working-directory rule above, and a 
 means you processed somebody else's file. Compute it from `<work dir>/input.png` as shown; never
 copy a digest from a previous run.
 
-A `200` from step 4 means it landed. Then reply with the single word `DONE`.
+A `200` from step 4 means it landed. Then reply with `DONE`, followed by the two frame lines
+step 2 printed and the `CHECK` line step 3 printed — nothing else. Those three lines are the
+only record of what resolution the model actually returned and how much of the frame came out
+transparent, and a person reads them; the Worker does not parse them.
 
 The token expires in ten minutes. A *rejected* upload does not spend it, so if the Worker
 answers `502` or `409 input_mismatch` you can fix the file and PUT again with the same token.
@@ -208,8 +274,8 @@ reproduced from memory rather than produced from this input.
 This has actually happened twice in production: once as the well-known 68-byte 1×1 transparent
 PNG when a malformed A2A part meant no image ever arrived, and once as an 848 KB **JPEG**
 containing a hand-drawn checkerboard, mechanically a "success" but not a cutout — which is why
-step 2 asks for a flat colour and step 3 does the keying rather than trusting the model for
-alpha directly.
+step 2 asks for flat colours and step 3 solves for alpha itself rather than trusting the model
+for alpha directly.
 
 **An honest failure is strictly better.** If any step fails, reply in plain text naming the
 command that failed and what it printed. The Worker surfaces that text to the caller. It cannot

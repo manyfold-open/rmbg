@@ -71,87 +71,88 @@ Exactly the four steps in the text part.
 curl -sS -o /tmp/input.png '<input URL>'
 ```
 
-**Step 1.5 — pick a background colour that is nothing like this subject.** A fixed colour
-(always magenta) used to be asked for unconditionally, and it failed silently on any subject
-whose own colours sit close to magenta — a pink toy, for instance. Compute the safest colour
-for *this* photo instead:
-
-```bash
-python3 - <<'EOF'
-from PIL import Image
-import numpy as np
-img = np.array(Image.open('/tmp/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
-if len(img) > 20000:
-    img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
-candidates = {
-    'magenta': (255, 0, 255), 'green': (0, 255, 0), 'cyan': (0, 255, 255),
-    'yellow': (255, 255, 0), 'blue': (0, 0, 255), 'red': (255, 0, 0),
-}
-scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
-          for name, rgb in candidates.items()}
-name = max(scores, key=scores.get)
-r, g, b = candidates[name]
-print(f'KEY {name} {r} {g} {b} mindist={scores[name]:.0f}')
-EOF
-```
-
-That prints e.g. `KEY cyan 0 255 255 mindist=142`. Use exactly that colour and that `mindist`
-number for steps 2 and 3 below — do not default to magenta.
-
-**Step 2 — ask `gemini-3.1-flash-image` for a flat background in the colour step 1.5 printed,
-not for transparency.** Save its output as `/tmp/gen.png`.
+**Step 2 — render the subject twice: once over white, once over black.** Save the two frames as
+`/tmp/white.png` and `/tmp/black.png`, both at 2K.
 
 This is the single most important instruction in this document, and it is counter-intuitive.
 An image generator has no alpha channel to write to. Asked for a transparent background it
 will do the only thing it can: *paint a picture of transparency* — the grey-and-white
 checkerboard from an image editor — as ordinary opaque pixels. That has already happened
-here (see below). So ask for something it can actually produce:
+here (see below). So ask for something it can actually produce: a flat background colour.
 
-> the same image, with every background pixel replaced by solid pure `<colour>`, RGB exactly
-> `<r>, <g>, <b>` (the values step 1.5 printed) — one flat colour, no gradient, no shadow, no
-> vignette, no texture
+One frame is not enough, though — from a single frame, alpha can only be *estimated*, by how
+far each pixel sits from the background colour. Two frames make it arithmetic. So:
+
+1. `input.png` → **solid pure white** background, RGB exactly 255,255,255 — one flat colour,
+   no gradient, no shadow, no vignette, no texture, subject pixel-for-pixel unchanged. Say
+   explicitly that an area *enclosed* by the subject is still background — a hole through it,
+   the gap inside a handle or a ring. Left unsaid, the model reads an enclosed gap as part of
+   the object and paints around it, and that region comes back fully opaque.
+2. `white.png` → **solid pure black** background, RGB exactly 0,0,0 — *editing that frame*,
+   not generating again from `input.png`.
+
+The second call must edit the first frame. Step 3 subtracts one from the other, and the
+subtraction only means anything if the subject sits in the same place with the same colours in
+both; two independent generations drift, and the drift lands in the alpha channel.
+
+Both calls set `imageConfig.imageSize = '2K'` (capital K — lowercase is rejected). Unset, the
+API defaults to 1K, and a 1024-wide mask stretched over a 2048-wide photo is a blurred edge
+you cannot get back.
 
 Keep the subject's own pixels: colours, texture, hair, fur, edge detail, proportions. Do not
 restyle, recolour, crop or recompose it.
 
-**Step 3 — convert that flat colour into a real alpha channel, back at the original size.**
-This step, not Gemini, is what produces the transparency:
+**Step 3 — solve for the alpha channel, back at the original size.** This step, not Gemini, is
+what produces the transparency, and it is an identity rather than an estimate:
+
+```
+obs_white = α·F + (1 − α)·255
+obs_black = α·F + (1 − α)·0
+obs_white − obs_black = (1 − α)·255      ← the subject cancels, whatever colour it is
+α = 1 − mean(obs_white − obs_black)/255
+F = obs_black / α
+```
 
 ```bash
 python3 - <<'EOF'
 from PIL import Image
 import numpy as np
 src = Image.open('/tmp/input.png').convert('RGB')
-gen = Image.open('/tmp/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
-rgb = np.array(gen).astype(np.float32)
-key = np.array([R, G, B], dtype=np.float32)   # the RGB step 1.5 printed
-mindist = MINDIST                             # the mindist number step 1.5 printed
-dist = np.abs(rgb - key).sum(axis=2)
-lo, hi = 20.0, max(mindist, 21.0)
-alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
-# Semi-transparent edge pixels are an anti-aliased blend of subject and key colour.
-# Un-mix the key colour back out so the edge doesn't carry a colour fringe.
-a = (alpha.astype(np.float32) / 255.0)[..., None]
-decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
-rgb_out = np.where(alpha[..., None] < 255, decontam, rgb).astype(np.uint8)
-Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save('/tmp/output.png')
+def frame(p):
+    im = Image.open(p).convert('RGB')
+    return np.array(im.resize(src.size, Image.LANCZOS) if im.size != src.size else im).astype(np.float32)
+white, black = frame('/tmp/white.png'), frame('/tmp/black.png')
+d = np.clip((white - black).mean(axis=2), 0.0, 255.0)
+alpha = 1.0 - d / 255.0
+# Two model calls never return byte-identical subject pixels, so d wobbles a few counts
+# either side of zero across solid parts of the subject. Snap only those two ends.
+alpha[d <= 8.0] = 1.0
+alpha[d >= 247.0] = 0.0
+a8 = np.round(alpha * 255).astype(np.uint8)
+# Un-premultiply, and take fully-opaque pixels from the ORIGINAL: the model redraws the
+# subject, and its redrawing is not the photograph that was sent.
+F = black / np.clip(alpha, 1e-3, 1.0)[..., None]
+rgb_out = np.where(a8[..., None] == 255, np.array(src, dtype=np.float32),
+                   np.clip(F, 0.0, 255.0)).astype(np.uint8)
+Image.fromarray(np.dstack([rgb_out, a8]), 'RGBA').save('/tmp/output.png')
 EOF
 ```
 
-Replace `key` and `mindist` above with step 1.5's actual numbers before running — a fixed
-threshold here (an earlier version hardcoded `(dist - 60) * 4`) saturates to fully-opaque too
-early whenever the subject's colour sits anywhere near the key, and that bakes a solid ring of
-raw background colour permanently into the silhouette instead of blending it away. Scaling the
-ramp to the real key-to-subject distance for this photo is what actually removes it.
+There is nothing to fill in here: no key colour, no threshold, no number to retype.
 
-With ImageMagick instead (replace `<colour>` with the name step 1.5 printed):
+Until 2026-08-25 this step keyed a *single* frame against a chosen background colour and
+un-mixed the spill with `(rgb − key·(1−a))/a`. Measured against the original on a real
+production result, that estimate produced a 13–14 px edge ramp where the original's own edge
+is 1 px, 7.33% partial alpha against 0.04%, a silhouette at IoU 0.9351, and an enclosed hole
+in the middle of the subject left fully opaque. A distance threshold flattens the ramp, the
+un-mix over-subtracts at the edge (a halo) and divides residue by an alpha of ~0.04 out in the
+background (a scatter of stray coloured pixels). Every artefact was a by-product of estimating.
+The identity above gives them nowhere to come from, and it also handles what chroma-key
+structurally cannot — a white shirt shot against a white wall — because the subject is never
+identified by its colour at all.
 
-```bash
-convert /tmp/gen.png -resize "$(identify -format '%wx%h!' /tmp/input.png)" \
-  -fuzz 20% -transparent <colour> /tmp/output.png
-```
-
-If neither tool exists, do not improvise and do not upload — say so in your reply.
+If PIL, numpy or google-genai is unavailable, do not improvise and do not upload — say which
+import failed in your reply.
 
 ```bash
 # 4. Upload the result.

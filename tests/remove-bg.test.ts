@@ -273,14 +273,58 @@ describe('remove-bg handler', () => {
     });
 
     it('keeps the original pixels inside the silhouette', async () => {
-      // gemini-3.1-flash-image answers 1024x1024 whatever it is given, and redraws the
-      // subject rather than returning it. Taking the opaque interior from the generated
-      // frame meant shipping that redrawing upscaled to the input's size — measured 2x on a
-      // real 2048x2048 job, and every cutout came back soft.
+      // The model redraws the subject rather than returning it. Taking the opaque interior
+      // from the generated frame meant shipping that redrawing upscaled to the input's size —
+      // measured 2x on a real 2048x2048 job, and every cutout came back soft.
       const { prompt } = await capturePrompt();
 
-      expect(prompt).toContain('np.array(src, dtype=np.float32)).astype(np.uint8)');
-      expect(prompt).not.toContain('decontam, rgb)');
+      expect(prompt).toContain('np.array(src, dtype=np.float32)');
+    });
+
+    /**
+     * Alpha is solved, not estimated. The same subject over two known backgrounds gives
+     * `obs_white - obs_black = (1 - alpha) * 255` for any subject colour; the single-frame
+     * chroma-key this replaced could only guess at alpha from a colour distance, and measured
+     * 13 px of edge ramp and 7.33% partial alpha against an original whose own edge is 1 px
+     * and 0.04%.
+     */
+    it('asks for a white frame and a black frame, the second edited from the first', async () => {
+      const { prompt, jobId } = await capturePrompt();
+      const dir = workDirFor(jobId);
+
+      // The black frame must be an edit of the white one. Two independent generations drift,
+      // and the subtraction above only cancels the subject if it did not move between frames.
+      expect(prompt).toContain(`gen(D + '/input.png', D + '/white.png', WHITE)`);
+      expect(prompt).toContain(`gen(D + '/white.png', D + '/black.png', BLACK)`);
+      // Both frames hang off this job's own directory, like every other file it writes.
+      expect(prompt).toContain(`D = '${dir}'`);
+    });
+
+    it('asks for 2K frames, because the API default is 1K', async () => {
+      // Unset, imageConfig.imageSize defaults to 1K, and a 1024-wide mask stretched over a
+      // 2048-wide photo is half the measured edge blur on its own. Capital K; lowercase is
+      // rejected by the API.
+      const { prompt } = await capturePrompt();
+
+      expect(prompt).toContain("types.ImageConfig(image_size='2K')");
+    });
+
+    it('tells the model an enclosed gap is background too', async () => {
+      // Left unsaid, the model reads a hole through the subject as part of the object and
+      // paints around it. Both frames then agree there, alpha solves to 1, and the hole is
+      // delivered opaque — 4387 px of it on the bench image, and every "too fat" pixel.
+      const { prompt } = await capturePrompt();
+
+      expect(prompt).toContain('fully enclosed by the subject');
+      expect(prompt).toContain('If the backdrop is visible through it, it ');
+    });
+
+    it('carries no chroma-key machinery any more', async () => {
+      const { prompt } = await capturePrompt();
+
+      for (const gone of ['key.json', 'mindist', 'magenta', 'decontam', 'gen.png']) {
+        expect(prompt).not.toContain(gone);
+      }
     });
 
     it('asks for a digest of the file the agent actually processed', async () => {

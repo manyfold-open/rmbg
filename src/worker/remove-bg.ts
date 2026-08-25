@@ -162,44 +162,63 @@ export function workDirFor(jobId: string): string {
  * write to. A uniform colour is something it can actually produce, and turning one colour
  * into alpha is arithmetic the agent can do exactly.
  *
- * Which colour is chosen dynamically per image (STEP 1.5), not fixed to magenta. A subject
- * that is itself close to the key colour (a pink toy against magenta, say) doesn't fail
- * cleanly: every pixel near that hue picks up partial alpha from the plain distance-to-key
- * formula, and un-mixing then bleeds key colour into it, leaving a visible tinted fringe
- * around the subject — this happened in production 2026-08-24 on a pink plush toy. Picking
- * whichever candidate colour is farthest from every colour actually present in *this* photo,
- * instead of asking the agent to eyeball "is this subject magenta-ish", removes most of that
- * failure mode instead of relying on a judgement call.
+ * It asks for that flat colour *twice*, white and then black, because one frame is not enough
+ * to recover alpha — it can only be guessed at. Every version of this pipeline up to
+ * 2026-08-25 keyed a single frame: alpha from a colour distance to the background, then
+ * `(rgb - key*(1-a))/a` to un-mix the spill. Measured against the original on a real
+ * production result, that estimate cost the following:
  *
- * That alone was not enough. The alpha ramp in STEP 3 used to saturate to fully-opaque at a
- * *fixed* key-distance (a hardcoded threshold and slope), regardless of how close the actual
- * subject colours were to the key. Reproduced locally: pixels still mostly background-coloured
- * — a soft anti-aliased edge only ~25% blended toward the subject — got misread as 100% subject
- * and left completely uncorrected, baking a solid ring of raw key colour permanently into the
- * output right at the silhouette. That is a *worse* artefact than a diffuse fringe: it is a
- * crisp, fully-opaque coloured outline, matching exactly what showed up in production. The fix
- * is to scale the ramp to the actual key-to-subject distance for this image (STEP 1.5's
- * `mindist`) instead of a constant tuned for nothing in particular.
+ *              original    single-frame key    two frames
+ *   edge ramp     1 px           12-14 px          2 px
+ *   partial α    0.04%        7.33-10.02%         0.06%
+ *   silhouette      —          IoU 0.9350        IoU 0.9698
+ *                             4522 too fat        0 too fat
+ *                             1391 eaten       2610 eaten
  *
- * STEP 1.5 hands its answer to STEP 3 through the job's key.json rather than through the
- * agent. The earlier version printed the numbers and asked the agent to paste them into placeholders
- * in STEP 3's script; measured over 12 production runs on 2026-08-25, it substituted magenta
- * instead of the computed colour in about a third of them, leaving stray key-coloured pixels
- * along the silhouette. More warnings did not help — the prompt already said not to. Removing
- * the transcription entirely does, and the remaining hand-carried value (STEP 2's request to
- * the image model) is now guarded: STEP 3 measures how much of the frame actually keyed out
- * and refuses to write an output when STEP 2's colour disagrees with the file, which would
- * otherwise produce a fully-opaque image that passes `assertUsableCutoutBytes` — that check
- * reads the PNG colour type, so an RGBA image whose alpha is 255 everywhere looks valid to it.
+ * (Both columns measured on the same 2048x2048 image on 2026-08-25, the middle one straight
+ * off the deployed Worker. What remains is a ~1 px tight boundary: the model renders the
+ * subject about 1700 px short of the original's own silhouette in *both* frames, with
+ * centroids agreeing to 0.3 px and bounding boxes to 2 px — so it is the model drawing a
+ * slightly tighter edge, not the two frames drifting apart.)
+ *
+ * and it left an enclosed hole in the middle of the subject fully opaque. None of that was a
+ * tuning failure. A distance-to-key threshold flattens the ramp, the un-mix over-subtracts
+ * near the edge (the halo) and divides residue by an alpha of ~0.04 out in the background
+ * (the confetti of stray coloured pixels). Every artefact was a by-product of estimating.
+ *
+ * Two frames make it arithmetic instead. With the same subject composited over white and over
+ * black, `obs_white - obs_black = (1 - α)·255` for any subject colour whatsoever, so
+ * `α = 1 - mean(obs_white - obs_black)/255` and `F = obs_black / α`. That is an identity, not
+ * an estimate: no key colour means no spill and no colour fringe, a continuous α means hair,
+ * fur, glass and soft edges survive as the fractional values they really are, and no threshold
+ * means there is no residue to clean up afterwards. It also handles what chroma-key
+ * structurally cannot — a white shirt shot against a white wall — because the subject is never
+ * identified by its colour at all.
+ *
+ * The second call must *edit* the white frame rather than regenerate from the input: the
+ * identity holds only where the subject pixels are the same in both frames. Two independent
+ * generations drift, and the drift lands in α.
+ *
+ * The white instruction spells out that an area *enclosed* by the subject is still background.
+ * Without that sentence the model reads an enclosed gap as part of the object and paints
+ * around it, so both frames agree there and α comes out 1 — which is exactly how the hole in
+ * the middle of the bench image survived as 4387 fully opaque pixels, and the whole of the
+ * "4505 px too fat" above. Adding it took that region to α=0 across all 4387 pixels and the
+ * too-fat count to zero. It is a statement about what background *means*, not a hint about
+ * any particular picture.
+ *
+ * Both calls set `imageConfig.imageSize = '2K'` (capital K; lowercase is rejected). Left
+ * unset, the API defaults to 1K and the mask arrives at 1024x1024 to be LANCZOS-stretched to
+ * a 2048x2048 input — half the measured edge width was that stretch. Verified on the live
+ * agent 2026-08-25: a 1024x1024 input came back 2048x2048 at 1958 candidate tokens against
+ * ~1290 for a 1K frame, so the model honours it rather than upscaling a 1K render.
  *
  * Finally, STEP 3 takes the *interior* of the cutout from the original photo and only the
- * partially-transparent edge from the generated frame. It used to take every pixel from the
- * generated frame, with the original consulted for nothing but its dimensions. That is why
- * results came back soft: `gemini-3.1-flash-image` returns 1024x1024 whatever it is given —
- * measured on a real job, a 2048x2048 input came back as a 2048x2048 cutout carrying 1024x1024
- * of actual detail, LANCZOS-stretched 2x — and every pixel of it was the model's redrawing of
- * the subject rather than the subject. The edge is still taken from the generated frame,
- * key-colour un-mixed, because an anti-aliased boundary is a blend the original cannot supply.
+ * partially-transparent edge from the solved frame. It used to take every pixel from the
+ * generated frame, with the original consulted for nothing but its dimensions, and every
+ * pixel of it was the model's redrawing of the subject rather than the subject. The edge
+ * still comes from the solved frame because an anti-aliased boundary is a blend of subject
+ * and background that the original cannot supply.
  */
 function agentInstructions(
   workDir: string,
@@ -222,117 +241,147 @@ STEP 0 — create this job's working directory:
 STEP 1 — download the image:
   curl -sS -o ${workDir}/input.png '${inputUrl}'
 
-STEP 1.5 — pick a background colour that is nothing like this subject:
+If you hold a background-removal skill that has you pick a key colour and chroma-key it out of
+one generated frame, ignore it for this job: the steps below replace that procedure outright.
+There is no key colour here, nothing to choose, and nothing to type in by hand.
+
+STEP 2 — render this subject twice, once over white and once over black. Run this verbatim:
 
   python3 - <<'EOF'
+from google import genai
+from google.genai import types
 from PIL import Image
-import numpy as np, json
+import sys
 D = '${workDir}'
-img = np.array(Image.open(D + '/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
-if len(img) > 20000:
-    img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
-candidates = {
-    'magenta': (255, 0, 255),
-    'green': (0, 255, 0),
-    'cyan': (0, 255, 255),
-    'yellow': (255, 255, 0),
-    'blue': (0, 0, 255),
-    'red': (255, 0, 0),
-}
-scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
-          for name, rgb in candidates.items()}
-name = max(scores, key=scores.get)
-r, g, b = candidates[name]
-json.dump({'name': name, 'rgb': [r, g, b], 'mindist': float(scores[name])},
-          open(D + '/key.json', 'w'))
-print(f'KEY {name} rgb=({r},{g},{b}) mindist={scores[name]:.0f}')
+client = genai.Client()
+
+def gen(src, out, instruction):
+    data = open(src, 'rb').read()
+    mime = 'image/' + (Image.open(src).format or 'PNG').lower()
+    r = client.models.generate_content(
+        model='${model}',
+        contents=[types.Part.from_bytes(data=data, mime_type=mime), instruction],
+        config=types.GenerateContentConfig(
+            image_config=types.ImageConfig(image_size='2K'),
+        ),
+    )
+    blob = None
+    for p in r.candidates[0].content.parts:
+        inline = getattr(p, 'inline_data', None)
+        if inline and inline.data:
+            blob = inline.data
+            break
+    if blob is None:
+        sys.exit('NO IMAGE for ' + out + ' :: ' + str(r.candidates[0].finish_reason))
+    open(out, 'wb').write(blob)
+    print('%s %s tokens=%s' % (out.rsplit('/', 1)[-1], Image.open(out).size,
+                               r.usage_metadata.candidates_token_count))
+
+WHITE = ("Replace the entire background with solid pure white, RGB exactly 255,255,255. "
+         "The background is everything that is not the subject, and that includes any area "
+         "fully enclosed by the subject: a hole through it, a gap between its parts, the "
+         "space inside a handle, a loop or a ring. If the backdrop is visible through it, it "
+         "is background and it must come out white too. "
+         "One flat colour: no gradient, no shadow, no reflection, no vignette, no texture. "
+         "Keep the subject pixel-for-pixel identical: same position, same size, same framing, "
+         "same colours, same lighting, same edge detail. Change only the background.")
+BLACK = ("Keep this image exactly as it is and change only the background colour: every pixel "
+         "that is currently pure white background becomes solid pure black, RGB exactly 0,0,0. "
+         "Do not move, resize, recolour, relight or redraw the subject - every subject pixel "
+         "must stay exactly where it is and keep its exact colour. Only the background changes.")
+
+gen(D + '/input.png', D + '/white.png', WHITE)
+gen(D + '/white.png', D + '/black.png', BLACK)
 EOF
 
-That prints one line, e.g. \`KEY cyan rgb=(0,255,255) mindist=142\`, and saves the same values
-to ${workDir}/key.json. STEP 3 reads that file, so you never retype these numbers anywhere.
+Three things about that script are load-bearing, so run it as written rather than calling the
+model your own way:
 
-The one place the colour still passes through you by hand is STEP 2's request to the image
-model, and the two must agree: STEP 3 keys out whatever key.json says, so asking the model
-for a different colour than this printed leaves nothing for it to key and the whole image comes
-back opaque. Use the name this line printed and nothing else — do not default to magenta,
-which is the specific mistake that keeps happening. If mindist is under 100, this subject spans
-most of the colour wheel and no candidate is fully safe; proceed with the printed colour anyway,
-but after STEP 3 look at ${workDir}/output.png's edges and say so honestly in your reply if you can
-see a colour fringe, instead of uploading it silently.
-
-STEP 2 — use ${model} to replace the background with the flat colour STEP 1.5 chose.
-
-First re-read the colour rather than recalling it:
-  cat ${workDir}/key.json
-
-Then send ${workDir}/input.png to ${model} and ask for the same image with every background
-pixel replaced by that solid colour, at exactly the RGB triple in that file. Save its output
-as ${workDir}/gen.png.
-
+  - The second call edits ${workDir}/white.png. It does NOT start again from input.png. STEP 3
+    subtracts one frame from the other, and that subtraction only means anything if the subject
+    is in the same place with the same colours in both. Two independent generations drift, and
+    the drift lands in the alpha channel as a ruined edge.
+  - imageConfig.imageSize is '2K', capital K. Lowercase is rejected. Left unset the API gives
+    you 1K, and a 1024-wide mask stretched over a 2048-wide photo is a blurred edge you cannot
+    get back.
   - Do NOT ask for transparency, and do NOT accept a grey-and-white checkerboard. A
     checkerboard is a drawing of transparency, not transparency, and it will be rejected.
-  - The background must be one flat colour: no gradient, no shadow, no vignette, no texture.
-  - Keep the subject's own pixels: colours, texture, hair, fur, edge detail, proportions.
-    Do not restyle, recolour, crop or recompose the subject.
 
-STEP 3 — turn that flat colour into a real alpha channel, at the original size:
+It prints one line per frame, e.g. \`white.png (2048, 2048) tokens=1958\`. Include both lines in
+your final reply.
+
+STEP 3 — solve for the alpha channel, at the original size:
 
   python3 - <<'EOF'
 from PIL import Image
-import numpy as np, json, sys
+import numpy as np, sys
 D = '${workDir}'
-k = json.load(open(D + '/key.json'))
-key = np.array(k['rgb'], dtype=np.float32)
-mindist = k['mindist']
 src = Image.open(D + '/input.png').convert('RGB')
-gen = Image.open(D + '/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
-rgb = np.array(gen).astype(np.float32)
-dist = np.abs(rgb - key).sum(axis=2)
-lo, hi = 20.0, max(mindist, 21.0)
-alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
-clear = float((alpha < 10).mean())
-print(f'CHECK key={k["name"]} transparent={clear*100:.1f}%')
-if clear < 0.01 or clear > 0.99:
-    sys.exit(f'KEY MISMATCH: only {clear*100:.1f}% keyed out, so STEP 2 did not paint the '
-             f'background {k["name"]}. Redo STEP 2 with {k["name"]}. Do not upload this.')
-# Fully-opaque pixels come from the ORIGINAL, not from the generated frame: the generator
-# redraws the subject at its own resolution, so using its pixels means shipping a redrawing
-# upscaled to the input's size. Only the partly-transparent edge is taken from the generated
-# frame, with the key colour un-mixed back out of it, because an anti-aliased boundary is a
-# blend of subject and background that the original cannot supply cleanly.
-a = (alpha.astype(np.float32) / 255.0)[..., None]
-decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
-rgb_out = np.where(alpha[..., None] < 255, decontam,
-                   np.array(src, dtype=np.float32)).astype(np.uint8)
-Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save(D + '/output.png')
+
+def frame(name):
+    im = Image.open(D + '/' + name).convert('RGB')
+    if abs(im.size[0] / im.size[1] - src.size[0] / src.size[1]) > 0.01:
+        print('WARNING %s is %s but the input is %s, so the model changed the shape of the '
+              'frame and the mask has to be stretched to fit.' % (name, im.size, src.size))
+    if im.size != src.size:
+        im = im.resize(src.size, Image.LANCZOS)
+    return np.array(im).astype(np.float32)
+
+white, black = frame('white.png'), frame('black.png')
+# The same subject over two known backgrounds is two equations in one unknown:
+#   obs_white = alpha * F + (1 - alpha) * 255
+#   obs_black = alpha * F + (1 - alpha) * 0
+# Subtracting cancels the subject entirely, whatever colour it is:
+#   obs_white - obs_black = (1 - alpha) * 255
+d = np.clip((white - black).mean(axis=2), 0.0, 255.0)
+alpha = 1.0 - d / 255.0
+# Two model calls never return byte-identical subject pixels, so d wobbles a few counts either
+# side of zero across solid parts of the subject. Snap only those last few counts at each end;
+# every fractional alpha in between is the identity above and is left exactly as solved.
+alpha[d <= 8.0] = 1.0
+alpha[d >= 247.0] = 0.0
+a8 = np.round(alpha * 255).astype(np.uint8)
+clear = float((a8 == 0).mean())
+solid = float((a8 == 255).mean())
+print('CHECK transparent=%.2f%% partial=%.2f%% opaque=%.2f%%'
+      % (clear * 100, (1 - clear - solid) * 100, solid * 100))
+if clear < 0.01:
+    sys.exit('THE TWO FRAMES MATCH: only %.2f%% of this came out transparent, so white.png and '
+             'black.png carry the same background and there is nothing to subtract. Redo STEP 2 '
+             'and check the second call really edited white.png to a black background. Do not '
+             'upload this.' % (clear * 100))
+if solid < 0.001:
+    sys.exit('THE SUBJECT IS GONE: %.2f%% of this is fully opaque, so one of the two frames '
+             'came back blank. Redo STEP 2. Do not upload this.' % (solid * 100))
+# Un-premultiply: obs_black is alpha * F, so the subject's own colour is obs_black / alpha.
+# Fully-opaque pixels are taken from the ORIGINAL instead — the model redraws the subject, and
+# its redrawing is not the photograph the user sent. Only the partly-transparent edge comes
+# from the solved frame, because an anti-aliased boundary is a blend of subject and background
+# that the original cannot supply.
+F = black / np.clip(alpha, 1e-3, 1.0)[..., None]
+rgb_out = np.where(a8[..., None] == 255,
+                   np.array(src, dtype=np.float32),
+                   np.clip(F, 0.0, 255.0)).astype(np.uint8)
+Image.fromarray(np.dstack([rgb_out, a8]), 'RGBA').save(D + '/output.png')
 EOF
 
-That script is complete as written — run it verbatim. It reads the key colour and mindist from
-${workDir}/key.json, so there is nothing to fill in and nothing to retype. Do not edit the
-numbers, do not paste a key colour in by hand, and do not hardcode a different mindist no matter
-how the image looks: mindist sets how wide the alpha ramp is, and a ramp too narrow for this
-image is exactly what used to bake a solid ring of raw background colour into the silhouette.
+That script is complete as written. There is no threshold to tune, no key colour to fill in and
+no number to retype — it reads the two frames STEP 2 wrote and solves for alpha directly. Do not
+edit it, and in particular do not replace the subtraction with a colour comparison against one
+frame: estimating alpha from a colour distance is exactly the method this replaced, and it cost
+a 13-pixel blurred edge, a coloured halo and a scatter of stray background pixels.
 
-Do not "improve" it by taking the colour channels from gen instead of src either. Keeping the
-original's own pixels inside the silhouette is the whole reason the result is sharp; the
-generated frame is there to say *where* the subject is, not to redraw it.
+Do not "improve" it by taking the colour channels from the generated frames instead of src
+either. Keeping the original's own pixels inside the silhouette is why the result is sharp; the
+generated frames are there to say *where* the subject is and how much of it is there, not to
+redraw it.
 
-It prints a CHECK line and refuses to write output.png if almost nothing or almost everything
-was keyed out. That failure means STEP 2's background does not match key.json — the usual cause
-is asking the model for magenta when STEP 1.5 chose something else. Go back to STEP 2, ask again
-using the colour named in the CHECK line, and rerun this script. Do not upload a file this
-script rejected, and do not work around it by changing the key.
+Print the CHECK line in your reply. If either sys.exit fires, the two frames do not carry
+different backgrounds — go back to STEP 2, run it again, and do not upload a file this script
+refused to write.
 
-If PIL or numpy is unavailable, the equivalent with ImageMagick is:
-  KEY=$(python3 -c "import json;print(json.load(open('${workDir}/key.json'))['name'])")
-  convert ${workDir}/gen.png -resize "$(identify -format '%wx%h!' ${workDir}/input.png)" \\
-    -fuzz 20% -transparent "$KEY" ${workDir}/keyed.png
-  convert ${workDir}/input.png \\( ${workDir}/keyed.png -alpha extract \\) \\
-    -compose CopyOpacity -composite ${workDir}/output.png
-(the second command is what puts the mask onto the original pixels; ImageMagick knows all six
-candidate colour names directly, and json is in the standard library even when PIL is missing,
-so there is nothing to type in by hand here either)
-If neither tool exists, do not improvise and do not upload — say so in your reply instead.
+If PIL, numpy or google-genai is unavailable, do not improvise and do not upload — say which
+import failed in your reply instead.
 
 STEP 4 — upload the result:
   curl -sS -X PUT --data-binary @${workDir}/output.png \\
@@ -346,7 +395,10 @@ the image it staged for this job and rejects the upload if they differ, which is
 input gets caught instead of being delivered to the wrong person. Compute it from
 ${workDir}/input.png as shown — do not copy a checksum from anywhere else.
 
-A 200 response means the upload succeeded. Then reply with the single word DONE.
+A 200 response means the upload succeeded. Then reply with DONE, followed by the two frame
+lines STEP 2 printed and the CHECK line STEP 3 printed — nothing else. Those three lines are
+the only record of what resolution the model actually returned and how much of the frame came
+out transparent, and they are read by a person, not parsed by the Worker.
 
 The upload is how the result gets back — your reply text is not the delivery channel, so do
 not paste base64 into it. If any step fails, reply with plain text saying exactly which
@@ -771,9 +823,9 @@ export async function handleRemoveBg(
           inputUrl: `${origin}/api/r2/${encodeURIComponent(ticket.inputKey)}`,
           uploadUrl: `${origin}/api/job/${ticket.jobId}/output`,
           mimeType,
-          // Fixed, not settings.bgRemoveModel: only an -image model can do the chroma-key
-          // step the agent runs (see GEMINI.md). bgRemoveModel picks the text model for the
-          // legacy direct-API SVG-path fallback below, which is a different job entirely.
+          // Fixed, not settings.bgRemoveModel: only an -image model can render the white and
+          // black frames STEP 2 needs (see GEMINI.md). bgRemoveModel picks the text model for
+          // the legacy direct-API SVG-path fallback below, which is a different job entirely.
           model: 'gemini-3.1-flash-image',
           r2Enabled: settings.r2Enabled,
           production: env.ENVIRONMENT === 'production',
