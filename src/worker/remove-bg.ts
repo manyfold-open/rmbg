@@ -207,6 +207,38 @@ export function workDirFor(jobId: string): string {
  * too-fat count to zero. It is a statement about what background *means*, not a hint about
  * any particular picture.
  *
+ * That sentence asks the model for a contract it has no way to guarantee, which is why STEP 3
+ * also verifies it. The model is a generator, not an editor: nothing in the API binds the pixels
+ * it returns to the pixels it was given. Two of five production images failed on 2026-08-25 in
+ * the two ways that follow from that. One came back re-framed — the same subject, zoomed 2.32x
+ * and re-centred on the canvas — so the mask was a correct cutout of a picture nobody asked for;
+ * laid over the original it opened a subject-shaped window onto the backdrop, 251,428 of 300,033
+ * opaque pixels being background. The other left an enclosed gap opaque. Neither was caught,
+ * because every check in this pipeline compared the two frames with each other, and since
+ * black.png is an edit of white.png they agree by construction — the re-framed pair scored
+ * `transparent=92.59% partial=0.26% opaque=7.15%`, which reads as a healthy result. The input
+ * was consulted for nothing but its dimensions and its colour values.
+ *
+ * So the verification is now referred to the input, which is the only artefact in the job that
+ * is not model output. Inside the region about to be called opaque, white.png must still show
+ * what input.png shows: compared tile by tile (32 px, so a small hole spans several) on mean
+ * difference, on correlation where both sides have texture, and on flat-versus-busy. Wholesale
+ * disagreement means the frame is of another picture and the attempt is thrown away; a local
+ * clump is what a painted-over gap looks like and is reported with its coordinates. Separately,
+ * anything pure white in *both* frames where the input is not white is background the second
+ * call never converted — the arithmetic makes it alpha 1, and it is the second failure above
+ * caught directly. None of this asks what the picture is of, so it holds for a photograph as
+ * much as for a drawing on flat paper. Measured against synthesised frame pairs: a faithful
+ * redraw with a 1 px shift scores 100% agreement, a 2% zoom 91%, a 5% zoom 75%, the observed
+ * 2.33x re-frame 9%.
+ *
+ * A rejected attempt is not the end of the job. STEP 3 writes retry.json — a sentence naming
+ * what went wrong, addressed to whichever of the two calls caused it — and STEP 2 appends it to
+ * the prompt on the next run, up to three attempts, keeping each rejected pair as
+ * rejected-N-*.png. A frame-wide failure is never delivered; a local one is delivered after
+ * three tries with the warning carried into the reply, because a suspicious patch is not worth
+ * refusing an otherwise good cutout over.
+ *
  * Both calls set `imageConfig.imageSize = '2K'` (capital K; lowercase is rejected). Left
  * unset, the API defaults to 1K and the mask arrives at 1024x1024 to be LANCZOS-stretched to
  * a 2048x2048 input — half the measured edge width was that stretch. Verified on the live
@@ -251,9 +283,15 @@ STEP 2 — render this subject twice, once over white and once over black. Run t
 from google import genai
 from google.genai import types
 from PIL import Image
-import sys
+import json, sys
 D = '${workDir}'
 client = genai.Client()
+# STEP 3 writes retry.json when it rejects an attempt: a sentence naming what went wrong, aimed
+# at whichever of the two calls caused it. Absent on the first run, which is the normal case.
+try:
+    extra = json.load(open(D + '/retry.json'))
+except Exception:
+    extra = {}
 
 def gen(src, out, instruction):
     data = open(src, 'rb').read()
@@ -290,8 +328,10 @@ BLACK = ("Keep this image exactly as it is and change only the background colour
          "Do not move, resize, recolour, relight or redraw the subject - every subject pixel "
          "must stay exactly where it is and keep its exact colour. Only the background changes.")
 
-gen(D + '/input.png', D + '/white.png', WHITE)
-gen(D + '/white.png', D + '/black.png', BLACK)
+if extra:
+    print('RETRY hints in effect: ' + ', '.join(sorted(extra)))
+gen(D + '/input.png', D + '/white.png', WHITE + extra.get('white', ''))
+gen(D + '/white.png', D + '/black.png', BLACK + extra.get('black', ''))
 EOF
 
 Three things about that script are load-bearing, so run it as written rather than calling the
@@ -314,7 +354,7 @@ STEP 3 — solve for the alpha channel, at the original size:
 
   python3 - <<'EOF'
 from PIL import Image
-import numpy as np, sys
+import numpy as np, glob, json, os, sys
 D = '${workDir}'
 src = Image.open(D + '/input.png').convert('RGB')
 
@@ -343,16 +383,115 @@ alpha[d >= 247.0] = 0.0
 a8 = np.round(alpha * 255).astype(np.uint8)
 clear = float((a8 == 0).mean())
 solid = float((a8 == 255).mean())
-print('CHECK transparent=%.2f%% partial=%.2f%% opaque=%.2f%%'
-      % (clear * 100, (1 - clear - solid) * 100, solid * 100))
-if clear < 0.01:
-    sys.exit('THE TWO FRAMES MATCH: only %.2f%% of this came out transparent, so white.png and '
-             'black.png carry the same background and there is nothing to subtract. Redo STEP 2 '
-             'and check the second call really edited white.png to a black background. Do not '
-             'upload this.' % (clear * 100))
+
+# Everything above compares the two frames with each other, and black.png is an edit OF
+# white.png, so they agree by construction even when both are wrong about this photo. The two
+# checks below compare the answer with input.png, the only thing in this job that is not model
+# output. Neither looks at what the picture is of, so both hold for any photograph.
+srcf = np.array(src, dtype=np.float32)
+opaque = a8 == 255
+opaque_px = max(int(opaque.sum()), 1)
+
+# (a) Background the second call never converted. Pure white in BOTH frames makes d = 0, so
+# alpha solves to 1 and the patch is delivered as subject; if the input is not white there, it
+# was background, and it is about to go out opaque.
+unconv = (opaque & (white.min(axis=2) >= 244.0) & (black.min(axis=2) >= 244.0)
+          & (np.abs(srcf - 255.0).mean(axis=2) > 12.0))
+unconv_px = int(unconv.sum())
+
+# (b) white.png is meant to be this photo with its background replaced, so wherever the mask is
+# about to call a pixel opaque, the frame must still show what the input shows there. Tile by
+# tile, because a hole is small and a frame-wide average would swallow it. Judge a tile only if
+# it is mostly inside the silhouette; call it off if the mean difference is large, if both sides
+# have texture that does not correlate, or if one side is flat where the other is busy.
+T = 32
+h, w = (srcf.shape[0] // T) * T, (srcf.shape[1] // T) * T
+
+def tiles(a):
+    return a[:h, :w].reshape(h // T, T, w // T, T).swapaxes(1, 2).reshape(h // T, w // T, T * T)
+
+m = tiles(opaque[:h, :w].astype(np.float32))
+n = m.sum(axis=2)
+judged = n >= T * T * 0.5
+nz = np.maximum(n, 1.0)
+gs, gw = tiles(srcf.mean(axis=2)), tiles(white.mean(axis=2))
+mad = (m * tiles(np.abs(srcf - white).mean(axis=2))).sum(axis=2) / nz
+mu_s, mu_w = (m * gs).sum(axis=2) / nz, (m * gw).sum(axis=2) / nz
+ds, dw = gs - mu_s[..., None], gw - mu_w[..., None]
+sd_s = np.sqrt(np.maximum((m * ds * ds).sum(axis=2) / nz, 0.0))
+sd_w = np.sqrt(np.maximum((m * dw * dw).sum(axis=2) / nz, 0.0))
+corr = (m * ds * dw).sum(axis=2) / nz / np.maximum(sd_s * sd_w, 1e-6)
+off = judged & ((mad > 40.0)
+                | ((sd_s >= 6.0) & (sd_w >= 6.0) & (corr < 0.35))
+                | ((sd_s < 4.0) & (sd_w >= 16.0)) | ((sd_w < 4.0) & (sd_s >= 16.0)))
+judged_n, off_n = int(judged.sum()), int(off.sum())
+agree = 1.0 - off_n / max(judged_n, 1)
+
+print('CHECK transparent=%.2f%% partial=%.2f%% opaque=%.2f%% agree=%.0f%%(%d/%d tiles) '
+      'unconverted=%dpx' % (clear * 100, (1 - clear - solid) * 100, solid * 100,
+                            agree * 100, judged_n - off_n, judged_n, unconv_px))
+
+def where(mask, grid):
+    ys, xs = np.nonzero(mask)
+    if not len(xs):
+        return ''
+    s = T if grid else 1
+    return ' around x=%d..%d y=%d..%d' % (xs.min() * s, xs.max() * s + s - 1,
+                                          ys.min() * s, ys.max() * s + s - 1)
+
+fatal, soft, hint = [], [], {}
+if clear < 0.001:
+    fatal.append('THE TWO FRAMES MATCH: only %.2f%% of this came out transparent, so white.png '
+                 'and black.png carry the same background and there is nothing to subtract. '
+                 'Check the second call really edited white.png to a black background.'
+                 % (clear * 100))
 if solid < 0.001:
-    sys.exit('THE SUBJECT IS GONE: %.2f%% of this is fully opaque, so one of the two frames '
-             'came back blank. Redo STEP 2. Do not upload this.' % (solid * 100))
+    fatal.append('THE SUBJECT IS GONE: %.2f%% of this is fully opaque, so one of the two frames '
+                 'came back blank.' % (solid * 100))
+if judged_n >= 8 and agree < 0.75:
+    fatal.append('THE FRAMES ARE NOT THIS PHOTO: %d of %d tiles inside the silhouette show '
+                 'something other than the input%s. The model re-framed, rescaled or redrew the '
+                 'subject instead of only changing the background, so this mask fits a picture '
+                 'nobody asked for: laid over the original it would cut out the wrong pixels.'
+                 % (off_n, judged_n, where(off, True)))
+    hint['white'] = (' Do not crop, zoom, pan, rotate or re-centre anything. The output frame '
+                     'must match the input frame exactly: same field of view, subject the same '
+                     'size, in the same place, covering the same pixels. A previous attempt '
+                     'moved it, which made the result unusable. Change only the background '
+                     'colour.')
+if unconv_px > max(256, 0.005 * opaque_px):
+    fatal.append('BACKGROUND LEFT INSIDE THE SUBJECT: %d pixels%s are pure white in both frames '
+                 'while the input is not white there, so the second call never converted that '
+                 'patch and it would be delivered opaque.' % (unconv_px, where(unconv, False)))
+    hint['black'] = (' This includes any white area fully enclosed by the subject - a hole '
+                     'through it, a gap between its parts, the space inside a handle, a loop or '
+                     'a ring. A previous attempt left such a patch white; every white pixel that '
+                     'is not the subject itself has to become black.')
+if not fatal and off_n >= 2:
+    soft.append('SUSPECT %d of %d tiles inside the silhouette%s do not match the input, which is '
+                'what an enclosed gap painted over as subject looks like.'
+                % (off_n, judged_n, where(off, True)))
+    hint['white'] = hint.get('white', '') + (
+        ' Look again at the area around x=%d y=%d: if the backdrop is visible there it is '
+        'background and must come out white, however completely the subject surrounds it.'
+        % (int(np.nonzero(off)[1].mean() * T), int(np.nonzero(off)[0].mean() * T)))
+
+# Rejected frames are kept rather than deleted, so a run that ends badly can still be looked at.
+attempt = len(glob.glob(D + '/rejected-*-white.png')) + 1
+if fatal or (soft and attempt < 3):
+    for name in ('white.png', 'black.png'):
+        if os.path.exists(D + '/' + name):
+            os.replace(D + '/' + name, '%s/rejected-%d-%s' % (D, attempt, name))
+    for line in fatal + soft:
+        print(line)
+    if attempt >= 3 and fatal:
+        sys.exit('GIVING UP after %d attempts. Do not upload anything: reply with the CHECK line '
+                 'and the reason above.' % attempt)
+    json.dump(hint, open(D + '/retry.json', 'w'))
+    sys.exit('ATTEMPT %d REJECTED, no file written. Run the STEP 2 command again exactly as it '
+             'is - it picks up %s/retry.json by itself - then run this STEP 3 command again.'
+             % (attempt, D))
+
 # Un-premultiply: obs_black is alpha * F, so the subject's own colour is obs_black / alpha.
 # Fully-opaque pixels are taken from the ORIGINAL instead — the model redraws the subject, and
 # its redrawing is not the photograph the user sent. Only the partly-transparent edge comes
@@ -363,6 +502,9 @@ rgb_out = np.where(a8[..., None] == 255,
                    np.array(src, dtype=np.float32),
                    np.clip(F, 0.0, 255.0)).astype(np.uint8)
 Image.fromarray(np.dstack([rgb_out, a8]), 'RGBA').save(D + '/output.png')
+for line in soft:
+    print(line + ' Three attempts have not cleared it, so this is going out as it stands - put '
+                 'this line in your reply.')
 EOF
 
 That script is complete as written. There is no threshold to tune, no key colour to fill in and
@@ -376,9 +518,16 @@ either. Keeping the original's own pixels inside the silhouette is why the resul
 generated frames are there to say *where* the subject is and how much of it is there, not to
 redraw it.
 
-Print the CHECK line in your reply. If either sys.exit fires, the two frames do not carry
-different backgrounds — go back to STEP 2, run it again, and do not upload a file this script
-refused to write.
+Print the CHECK line in your reply, all of it. \`transparent/partial/opaque\` say how much came
+out see-through; \`agree\` and \`unconverted\` say whether the frames are about the photo that was
+sent, which the first three cannot tell you — a mask cut from a rescaled redraw scores a
+perfectly healthy-looking transparent/partial/opaque split.
+
+If the script exits without writing a file, do exactly what it says: run the STEP 2 command
+again unchanged (it reads the note STEP 3 left for it) and then STEP 3 again. Up to three
+attempts. Never upload a file this script refused to write, and never edit the frames or the
+script by hand to get past it — if it gives up after three attempts, an honest failure with the
+CHECK line is the right answer.
 
 If PIL, numpy or google-genai is unavailable, do not improvise and do not upload — say which
 import failed in your reply instead.
@@ -396,9 +545,10 @@ input gets caught instead of being delivered to the wrong person. Compute it fro
 ${workDir}/input.png as shown — do not copy a checksum from anywhere else.
 
 A 200 response means the upload succeeded. Then reply with DONE, followed by the two frame
-lines STEP 2 printed and the CHECK line STEP 3 printed — nothing else. Those three lines are
-the only record of what resolution the model actually returned and how much of the frame came
-out transparent, and they are read by a person, not parsed by the Worker.
+lines STEP 2 printed and the whole CHECK line STEP 3 printed, plus any SUSPECT line — nothing
+else. Those lines are the only record of what resolution the model actually returned, how much
+of the frame came out transparent, and whether the frames were about the photo that was sent.
+They are read by a person, not parsed by the Worker.
 
 The upload is how the result gets back — your reply text is not the delivery channel, so do
 not paste base64 into it. If any step fails, reply with plain text saying exactly which

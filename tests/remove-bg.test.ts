@@ -294,8 +294,8 @@ describe('remove-bg handler', () => {
 
       // The black frame must be an edit of the white one. Two independent generations drift,
       // and the subtraction above only cancels the subject if it did not move between frames.
-      expect(prompt).toContain(`gen(D + '/input.png', D + '/white.png', WHITE)`);
-      expect(prompt).toContain(`gen(D + '/white.png', D + '/black.png', BLACK)`);
+      expect(prompt).toContain(`gen(D + '/input.png', D + '/white.png', WHITE`);
+      expect(prompt).toContain(`gen(D + '/white.png', D + '/black.png', BLACK`);
       // Both frames hang off this job's own directory, like every other file it writes.
       expect(prompt).toContain(`D = '${dir}'`);
     });
@@ -317,6 +317,46 @@ describe('remove-bg handler', () => {
 
       expect(prompt).toContain('fully enclosed by the subject');
       expect(prompt).toContain('If the backdrop is visible through it, it ');
+    });
+
+    /**
+     * The two frames cannot vouch for each other. black.png is an edit OF white.png, so they
+     * agree by construction — including when both are of some other picture. On 2026-08-25 a
+     * production job came back re-framed, the subject zoomed 2.32x and re-centred, and scored
+     * `transparent=92.59% partial=0.26% opaque=7.15%`: a healthy-looking split for a mask that
+     * cut a subject-shaped window out of the backdrop. input.png is the only artefact in the
+     * job that is not model output, so it is what the frames get measured against.
+     */
+    it('measures the frames against the input, not only against each other', async () => {
+      const { prompt } = await capturePrompt();
+
+      // The frame must still show what the input shows wherever the mask says "opaque"...
+      expect(prompt).toContain('srcf = np.array(src, dtype=np.float32)');
+      expect(prompt).toContain('THE FRAMES ARE NOT THIS PHOTO');
+      // ...and anything white in BOTH frames that is not white in the input is background the
+      // second call never converted, which the subtraction turns into alpha 1.
+      expect(prompt).toContain('BACKGROUND LEFT INSIDE THE SUBJECT');
+      // Both scores are reported, because a person reads the CHECK line to tell a good result
+      // from a broken one and the first three numbers cannot make that distinction.
+      expect(prompt).toContain('agree=%.0f%%');
+      expect(prompt).toContain('unconverted=%dpx');
+    });
+
+    it('sends a rejected attempt back through STEP 2 with a note about what went wrong', async () => {
+      // Each command runs in its own shell, so the note has to survive on disk rather than in a
+      // variable. STEP 3 writes it, STEP 2 appends it to whichever prompt caused the failure.
+      const { prompt, jobId } = await capturePrompt();
+
+      expect(prompt).toContain(`json.load(open(D + '/retry.json'))`);
+      expect(prompt).toContain(`extra.get('white', '')`);
+      expect(prompt).toContain(`extra.get('black', '')`);
+      expect(prompt).toContain(`json.dump(hint, open(D + '/retry.json', 'w'))`);
+      // Rejected frames are kept, not overwritten: a job that ends badly stays diagnosable.
+      expect(prompt).toContain(`'%s/rejected-%d-%s' % (D, attempt, name)`);
+      expect(prompt).toContain(`glob.glob(D + '/rejected-*-white.png')`);
+      // And the retrying is bounded — an honest failure beats an unbounded spend.
+      expect(prompt).toContain('GIVING UP after %d attempts');
+      expect(prompt).toContain(workDirFor(jobId));
     });
 
     it('carries no chroma-key machinery any more', async () => {
