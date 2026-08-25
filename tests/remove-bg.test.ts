@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assertUsableCutout, handleRemoveBg, pngDimensions } from '../src/worker/remove-bg';
+import {
+  assertUsableCutout,
+  handleRemoveBg,
+  pngDimensions,
+  workDirFor,
+} from '../src/worker/remove-bg';
+import { INPUT_DIGEST_METADATA, sha256Hex } from '../src/worker/job';
 import type { Env } from '../src/worker/types';
 import app from '../src/worker/index';
 import * as connectModule from '../src/worker/connect';
@@ -25,13 +31,30 @@ const mockDb = {
  * The agent path now hands the image over through R2, so a bucket is part of the fixture
  * rather than an optional extra. `seed` pre-loads what the agent is pretending to upload.
  */
-function makeR2(seed: Record<string, { bytes: Uint8Array; contentType: string }> = {}) {
+interface StoredObject {
+  bytes: Uint8Array;
+  contentType: string;
+  metadata?: Record<string, string>;
+}
+
+function makeR2(seed: Record<string, StoredObject> = {}) {
   const store = new Map(Object.entries(seed));
   return {
     store,
     bucket: {
-      async put(key: string, bytes: Uint8Array, opts?: { httpMetadata?: { contentType?: string } }) {
-        store.set(key, { bytes, contentType: opts?.httpMetadata?.contentType ?? 'image/png' });
+      async put(
+        key: string,
+        bytes: Uint8Array,
+        opts?: {
+          httpMetadata?: { contentType?: string };
+          customMetadata?: Record<string, string>;
+        },
+      ) {
+        store.set(key, {
+          bytes,
+          contentType: opts?.httpMetadata?.contentType ?? 'image/png',
+          metadata: opts?.customMetadata,
+        });
       },
       async get(key: string) {
         const hit = store.get(key);
@@ -206,6 +229,86 @@ describe('remove-bg handler', () => {
 
     expect(res.r2Key).toMatch(/^job_[a-f0-9]{32}_output\.png$/);
     expect(res.image).toContain('data:image/png;base64,iVBORw0KGgo');
+  });
+
+  /**
+   * The agent runs every delegation in one sandbox with one /tmp. When the instructions named
+   * fixed paths, a batch of six had six turns writing /tmp/input.png, /tmp/gen.png and
+   * /tmp/output.png, and turns uploaded each other's pictures under their own job tokens —
+   * a valid cutout of the wrong subject, which no downstream check can catch. These assert
+   * the two properties that make that impossible and unnecessary respectively.
+   */
+  describe('the instructions sent to the agent', () => {
+    /** Run one agent-path removal and hand back the prompt text it dispatched. */
+    async function capturePrompt(): Promise<{ prompt: string; jobId: string }> {
+      mockAgent();
+      const r2 = makeR2();
+      let prompt = '';
+      vi.spyOn(a2aModule, 'consumeA2AStream').mockImplementationOnce(async (options) => {
+        const message = (options.params as { message: { parts: { text?: string }[] } }).message;
+        prompt = message.parts[0].text ?? '';
+        await r2.bucket.put(`job_${stagedJobId(r2.store)}_output.png`, bytesOf(CUTOUT_PNG_BASE64), {
+          httpMetadata: { contentType: 'image/png' },
+        });
+        return snapshotOf('DONE');
+      });
+
+      const mockEnv = { DB: mockDb, R2_IMAGE: r2.bucket } as Env;
+      await handleRemoveBg(
+        mockEnv,
+        { image: `data:image/png;base64,${CUTOUT_PNG_BASE64}` },
+        'https://test.local',
+      );
+      return { prompt, jobId: stagedJobId(r2.store) };
+    }
+
+    it('names a working directory belonging to this job and no shared /tmp file', async () => {
+      const { prompt, jobId } = await capturePrompt();
+
+      expect(prompt).toContain(workDirFor(jobId));
+      expect(workDirFor(jobId)).toBe(`/tmp/rmbg-${jobId}`);
+      // Every /tmp path must be under this job's directory. `find /tmp -maxdepth 1` is the
+      // one bare mention and has no trailing slash, so it is not matched here.
+      expect(prompt.match(/\/tmp\/(?!rmbg-)/g)).toBeNull();
+    });
+
+    it('keeps the original pixels inside the silhouette', async () => {
+      // gemini-3.1-flash-image answers 1024x1024 whatever it is given, and redraws the
+      // subject rather than returning it. Taking the opaque interior from the generated
+      // frame meant shipping that redrawing upscaled to the input's size — measured 2x on a
+      // real 2048x2048 job, and every cutout came back soft.
+      const { prompt } = await capturePrompt();
+
+      expect(prompt).toContain('np.array(src, dtype=np.float32)).astype(np.uint8)');
+      expect(prompt).not.toContain('decontam, rgb)');
+    });
+
+    it('asks for a digest of the file the agent actually processed', async () => {
+      const { prompt } = await capturePrompt();
+      expect(prompt).toContain('x-input-sha256');
+      expect(prompt).toContain('sha256sum');
+    });
+  });
+
+  it('records the staged input digest so the upload can be checked against it', async () => {
+    mockAgent();
+    const r2 = makeR2();
+    vi.spyOn(a2aModule, 'consumeA2AStream').mockImplementationOnce(async () => {
+      await r2.bucket.put(`job_${stagedJobId(r2.store)}_output.png`, bytesOf(CUTOUT_PNG_BASE64), {
+        httpMetadata: { contentType: 'image/png' },
+      });
+      return snapshotOf('DONE');
+    });
+
+    const mockEnv = { DB: mockDb, R2_IMAGE: r2.bucket } as Env;
+    await handleRemoveBg(
+      mockEnv,
+      { image: `data:image/png;base64,${CUTOUT_PNG_BASE64}` },
+      'https://test.local',
+    );
+
+    const input = r2.store.get(`job_${stagedJobId(r2.store)}_input.png`)!;
+    expect(input.metadata?.[INPUT_DIGEST_METADATA]).toBe(await sha256Hex(bytesOf(CUTOUT_PNG_BASE64)));
   });
 
   it('rejects a placeholder even when it arrived through the upload', async () => {

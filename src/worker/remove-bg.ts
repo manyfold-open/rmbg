@@ -4,7 +4,14 @@ import { listConnectedAgents, credentialFor } from './connect';
 import { consumeA2AStream, fetchImageAsDataUrl, type StreamSnapshot } from './a2a';
 import { loadAppSettings } from './settings-manager';
 import { base64ToBytes, putImageAtKey, saveImageToR2 } from './r2';
-import { createJobTicket, pruneJobTickets, setJobNote, type JobTicket } from './job';
+import {
+  INPUT_DIGEST_METADATA,
+  createJobTicket,
+  pruneJobTickets,
+  setJobNote,
+  sha256Hex,
+  type JobTicket,
+} from './job';
 
 export interface RemoveBgRequest {
   /** Base64 string or data URL */
@@ -121,6 +128,29 @@ export function bytesToBase64(bytes: Uint8Array): string {
 }
 
 /**
+ * The scratch directory this job owns on the agent's filesystem.
+ *
+ * Every path in the instructions is absolute and job-specific, because the agent runs *all*
+ * of its delegations in one sandbox. Verified 2026-08-25 by probing it directly: a single
+ * hostname, a single `/tmp`, and after a batch of a dozen images exactly one `/tmp/input.png`,
+ * one `/tmp/gen.png` and one `/tmp/output.png` left behind. The client submits six at a time,
+ * so six turns were writing those same three paths.
+ *
+ * The failure that produced was not a crash. A turn would download its own input, have it
+ * overwritten by a sibling mid-turn, then key, cut out and upload the *sibling's* picture
+ * under its own job token: right destination, wrong image. Nothing downstream can catch it —
+ * the bytes are a perfectly valid cutout, just of something else — which is why the fix has
+ * to be that two turns never name the same file.
+ *
+ * A shell variable would not do. Each command here is run as its own tool call with a fresh
+ * shell, so anything exported in one is gone by the next. The path has to be a literal, and
+ * this is where it is baked in.
+ */
+export function workDirFor(jobId: string): string {
+  return `/tmp/rmbg-${jobId}`;
+}
+
+/**
  * The instruction the agent receives. The image also rides along as an A2A FilePart so the
  * agent can *see* it, but seeing it is not enough: it reported it cannot materialise those
  * bytes onto its filesystem, and its card only allows text back. So the real work is done
@@ -151,8 +181,8 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * is to scale the ramp to the actual key-to-subject distance for this image (STEP 1.5's
  * `mindist`) instead of a constant tuned for nothing in particular.
  *
- * STEP 1.5 hands its answer to STEP 3 through /tmp/key.json rather than through the agent.
- * The earlier version printed the numbers and asked the agent to paste them into placeholders
+ * STEP 1.5 hands its answer to STEP 3 through the job's key.json rather than through the
+ * agent. The earlier version printed the numbers and asked the agent to paste them into placeholders
  * in STEP 3's script; measured over 12 production runs on 2026-08-25, it substituted magenta
  * instead of the computed colour in about a third of them, leaving stray key-coloured pixels
  * along the silhouette. More warnings did not help — the prompt already said not to. Removing
@@ -161,19 +191,44 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * and refuses to write an output when STEP 2's colour disagrees with the file, which would
  * otherwise produce a fully-opaque image that passes `assertUsableCutoutBytes` — that check
  * reads the PNG colour type, so an RGBA image whose alpha is 255 everywhere looks valid to it.
+ *
+ * Finally, STEP 3 takes the *interior* of the cutout from the original photo and only the
+ * partially-transparent edge from the generated frame. It used to take every pixel from the
+ * generated frame, with the original consulted for nothing but its dimensions. That is why
+ * results came back soft: `gemini-3.1-flash-image` returns 1024x1024 whatever it is given —
+ * measured on a real job, a 2048x2048 input came back as a 2048x2048 cutout carrying 1024x1024
+ * of actual detail, LANCZOS-stretched 2x — and every pixel of it was the model's redrawing of
+ * the subject rather than the subject. The edge is still taken from the generated frame,
+ * key-colour un-mixed, because an anti-aliased boundary is a blend the original cannot supply.
  */
-function agentInstructions(inputUrl: string, uploadUrl: string, token: string, model: string): string {
+function agentInstructions(
+  workDir: string,
+  inputUrl: string,
+  uploadUrl: string,
+  token: string,
+  model: string,
+): string {
   return `Remove the background from an image. Do the work with shell commands — do not answer from the attached preview alone.
 
+Every path below is inside ${workDir}, which belongs to this job alone. Other background
+removals are running in the same sandbox at the same time, writing files of their own. Use
+these exact paths and do not shorten them to a bare name directly under /tmp: a shared name
+makes two jobs overwrite each other's images, and each one then uploads the other's picture.
+
+STEP 0 — create this job's working directory:
+  mkdir -p ${workDir}
+  find /tmp -maxdepth 1 -type d -name 'rmbg-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+
 STEP 1 — download the image:
-  curl -sS -o /tmp/input.png '${inputUrl}'
+  curl -sS -o ${workDir}/input.png '${inputUrl}'
 
 STEP 1.5 — pick a background colour that is nothing like this subject:
 
   python3 - <<'EOF'
 from PIL import Image
 import numpy as np, json
-img = np.array(Image.open('/tmp/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
+D = '${workDir}'
+img = np.array(Image.open(D + '/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
 if len(img) > 20000:
     img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
 candidates = {
@@ -189,30 +244,30 @@ scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
 name = max(scores, key=scores.get)
 r, g, b = candidates[name]
 json.dump({'name': name, 'rgb': [r, g, b], 'mindist': float(scores[name])},
-          open('/tmp/key.json', 'w'))
+          open(D + '/key.json', 'w'))
 print(f'KEY {name} rgb=({r},{g},{b}) mindist={scores[name]:.0f}')
 EOF
 
 That prints one line, e.g. \`KEY cyan rgb=(0,255,255) mindist=142\`, and saves the same values
-to /tmp/key.json. STEP 3 reads that file, so you never retype these numbers anywhere.
+to ${workDir}/key.json. STEP 3 reads that file, so you never retype these numbers anywhere.
 
 The one place the colour still passes through you by hand is STEP 2's request to the image
-model, and the two must agree: STEP 3 keys out whatever /tmp/key.json says, so asking the model
+model, and the two must agree: STEP 3 keys out whatever key.json says, so asking the model
 for a different colour than this printed leaves nothing for it to key and the whole image comes
 back opaque. Use the name this line printed and nothing else — do not default to magenta,
 which is the specific mistake that keeps happening. If mindist is under 100, this subject spans
 most of the colour wheel and no candidate is fully safe; proceed with the printed colour anyway,
-but after STEP 3 look at /tmp/output.png's edges and say so honestly in your reply if you can
+but after STEP 3 look at ${workDir}/output.png's edges and say so honestly in your reply if you can
 see a colour fringe, instead of uploading it silently.
 
 STEP 2 — use ${model} to replace the background with the flat colour STEP 1.5 chose.
 
 First re-read the colour rather than recalling it:
-  cat /tmp/key.json
+  cat ${workDir}/key.json
 
-Then send /tmp/input.png to ${model} and ask for the same image with every background pixel
-replaced by that solid colour, at exactly the RGB triple in that file. Save its output as
-/tmp/gen.png.
+Then send ${workDir}/input.png to ${model} and ask for the same image with every background
+pixel replaced by that solid colour, at exactly the RGB triple in that file. Save its output
+as ${workDir}/gen.png.
 
   - Do NOT ask for transparency, and do NOT accept a grey-and-white checkerboard. A
     checkerboard is a drawing of transparency, not transparency, and it will be rejected.
@@ -225,53 +280,71 @@ STEP 3 — turn that flat colour into a real alpha channel, at the original size
   python3 - <<'EOF'
 from PIL import Image
 import numpy as np, json, sys
-k = json.load(open('/tmp/key.json'))
+D = '${workDir}'
+k = json.load(open(D + '/key.json'))
 key = np.array(k['rgb'], dtype=np.float32)
 mindist = k['mindist']
-src = Image.open('/tmp/input.png').convert('RGB')
-gen = Image.open('/tmp/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
+src = Image.open(D + '/input.png').convert('RGB')
+gen = Image.open(D + '/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
 rgb = np.array(gen).astype(np.float32)
 dist = np.abs(rgb - key).sum(axis=2)
 lo, hi = 20.0, max(mindist, 21.0)
 alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
-# Semi-transparent edge pixels are an anti-aliased blend of subject and key colour.
-# Un-mix the key colour back out so the edge doesn't carry a colour fringe.
-a = (alpha.astype(np.float32) / 255.0)[..., None]
-decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
-rgb_out = np.where(alpha[..., None] < 255, decontam, rgb).astype(np.uint8)
 clear = float((alpha < 10).mean())
 print(f'CHECK key={k["name"]} transparent={clear*100:.1f}%')
 if clear < 0.01 or clear > 0.99:
     sys.exit(f'KEY MISMATCH: only {clear*100:.1f}% keyed out, so STEP 2 did not paint the '
              f'background {k["name"]}. Redo STEP 2 with {k["name"]}. Do not upload this.')
-Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save('/tmp/output.png')
+# Fully-opaque pixels come from the ORIGINAL, not from the generated frame: the generator
+# redraws the subject at its own resolution, so using its pixels means shipping a redrawing
+# upscaled to the input's size. Only the partly-transparent edge is taken from the generated
+# frame, with the key colour un-mixed back out of it, because an anti-aliased boundary is a
+# blend of subject and background that the original cannot supply cleanly.
+a = (alpha.astype(np.float32) / 255.0)[..., None]
+decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
+rgb_out = np.where(alpha[..., None] < 255, decontam,
+                   np.array(src, dtype=np.float32)).astype(np.uint8)
+Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save(D + '/output.png')
 EOF
 
 That script is complete as written — run it verbatim. It reads the key colour and mindist from
-/tmp/key.json, so there is nothing to fill in and nothing to retype. Do not edit the numbers,
-do not paste a key colour in by hand, and do not hardcode a different mindist no matter how the
-image looks: mindist sets how wide the alpha ramp is, and a ramp too narrow for this image is
-exactly what used to bake a solid ring of raw background colour into the silhouette.
+${workDir}/key.json, so there is nothing to fill in and nothing to retype. Do not edit the
+numbers, do not paste a key colour in by hand, and do not hardcode a different mindist no matter
+how the image looks: mindist sets how wide the alpha ramp is, and a ramp too narrow for this
+image is exactly what used to bake a solid ring of raw background colour into the silhouette.
 
-It prints a CHECK line and refuses to write /tmp/output.png if almost nothing or almost
-everything was keyed out. That failure means STEP 2's background does not match /tmp/key.json —
-the usual cause is asking the model for magenta when STEP 1.5 chose something else. Go back to
-STEP 2, ask again using the colour named in the CHECK line, and rerun this script. Do not
-upload a file this script rejected, and do not work around it by changing the key.
+Do not "improve" it by taking the colour channels from gen instead of src either. Keeping the
+original's own pixels inside the silhouette is the whole reason the result is sharp; the
+generated frame is there to say *where* the subject is, not to redraw it.
+
+It prints a CHECK line and refuses to write output.png if almost nothing or almost everything
+was keyed out. That failure means STEP 2's background does not match key.json — the usual cause
+is asking the model for magenta when STEP 1.5 chose something else. Go back to STEP 2, ask again
+using the colour named in the CHECK line, and rerun this script. Do not upload a file this
+script rejected, and do not work around it by changing the key.
 
 If PIL or numpy is unavailable, the equivalent with ImageMagick is:
-  KEY=$(python3 -c "import json;print(json.load(open('/tmp/key.json'))['name'])")
-  convert /tmp/gen.png -resize "$(identify -format '%wx%h!' /tmp/input.png)" \\
-    -fuzz 20% -transparent "$KEY" /tmp/output.png
-(ImageMagick knows all six candidate colour names directly, and json is in the standard library
-even when PIL is missing, so there is nothing to type in by hand here either)
+  KEY=$(python3 -c "import json;print(json.load(open('${workDir}/key.json'))['name'])")
+  convert ${workDir}/gen.png -resize "$(identify -format '%wx%h!' ${workDir}/input.png)" \\
+    -fuzz 20% -transparent "$KEY" ${workDir}/keyed.png
+  convert ${workDir}/input.png \\( ${workDir}/keyed.png -alpha extract \\) \\
+    -compose CopyOpacity -composite ${workDir}/output.png
+(the second command is what puts the mask onto the original pixels; ImageMagick knows all six
+candidate colour names directly, and json is in the standard library even when PIL is missing,
+so there is nothing to type in by hand here either)
 If neither tool exists, do not improvise and do not upload — say so in your reply instead.
 
 STEP 4 — upload the result:
-  curl -sS -X PUT --data-binary @/tmp/output.png \\
+  curl -sS -X PUT --data-binary @${workDir}/output.png \\
     -H 'content-type: image/png' \\
     -H 'x-job-token: ${token}' \\
+    -H "x-input-sha256: $(sha256sum ${workDir}/input.png | cut -d' ' -f1)" \\
     '${uploadUrl}'
+
+That last header is a checksum of the file you actually processed. The Worker compares it with
+the image it staged for this job and rejects the upload if they differ, which is how a mixed-up
+input gets caught instead of being delivered to the wrong person. Compute it from
+${workDir}/input.png as shown — do not copy a checksum from anywhere else.
 
 A 200 response means the upload succeeded. Then reply with the single word DONE.
 
@@ -460,7 +533,13 @@ async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Pro
         parts: [
           {
             kind: 'text' as const,
-            text: agentInstructions(job.inputUrl, job.uploadUrl, ticket.token, job.model),
+            text: agentInstructions(
+              workDirFor(ticket.jobId),
+              job.inputUrl,
+              job.uploadUrl,
+              ticket.token,
+              job.model,
+            ),
           },
         ],
       },
@@ -673,12 +752,16 @@ export async function handleRemoveBg(
         // Hand the input over as a URL. The agent can download that; it cannot get at the
         // bytes of a FilePart, and it cannot send bytes back at all.
         const ticket = await createJobTicket(env, extensionFor(mimeType));
+        const inputBytes = base64ToBytes(base64Data);
         await putImageAtKey(
           env,
           ticket.inputKey,
-          base64ToBytes(base64Data),
+          inputBytes,
           mimeType,
           `input for ${selectedAgent.name}`,
+          // Travels with the object so the upload route can tell a cutout of *this* image
+          // apart from a cutout of whatever a sibling job happened to leave lying around.
+          { [INPUT_DIGEST_METADATA]: await sha256Hex(inputBytes) },
         );
         const job: AgentJob = {
           env,

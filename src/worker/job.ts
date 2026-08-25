@@ -53,6 +53,42 @@ export function outputKeyFor(jobId: string): string {
   return `job_${jobId}_output.png`;
 }
 
+/**
+ * The custom-metadata field on a staged input holding the SHA-256 of its bytes.
+ *
+ * The agent sends the same digest back, computed from the file it actually opened, and the
+ * upload route refuses a result whose digest does not match. It lives on the R2 object rather
+ * than in `bg_jobs` because the schema is applied with CREATE TABLE IF NOT EXISTS on every
+ * cold start, so a new column could not be added idempotently — the same reason `bg_job_notes`
+ * is a side table.
+ */
+export const INPUT_DIGEST_METADATA = 'sha256';
+
+/** Lowercase hex SHA-256, matching what `sha256sum` prints on the agent's side. */
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', bytes as unknown as ArrayBuffer);
+  return hex(new Uint8Array(digest));
+}
+
+/**
+ * The digest recorded for this job's staged input, or null if there is nothing to compare to.
+ *
+ * The key's extension follows the uploaded image's type, so it is found by prefix rather than
+ * reconstructed. A miss is not an error: inputs are pruned, and older jobs were staged before
+ * the digest was recorded at all. Verification is a guard, not a gate — it must never turn a
+ * good cutout into a failure just because the input is gone.
+ */
+export async function inputDigestFor(env: Env, jobId: string): Promise<string | null> {
+  if (!env.R2_IMAGE) return null;
+  const listed = await env.R2_IMAGE.list?.({
+    prefix: `job_${jobId}_input.`,
+    limit: 1,
+    include: ['customMetadata'],
+  }).catch(() => null);
+  const object = listed?.objects?.[0];
+  return object?.customMetadata?.[INPUT_DIGEST_METADATA] ?? null;
+}
+
 export async function createJobTicket(env: Env, extension: string): Promise<JobTicket> {
   const jobId = crypto.randomUUID().replace(/-/g, '');
   const token = hex(crypto.getRandomValues(new Uint8Array(32)));

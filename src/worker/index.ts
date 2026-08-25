@@ -44,6 +44,7 @@ import {
   consumeJobTicket,
   getJobNote,
   getJobStatus,
+  inputDigestFor,
   jobIdFromInputKey,
   markInputFetched,
   outputKeyFor,
@@ -248,6 +249,10 @@ app.post('/api/remove-bg', async (c) => {
 /**
  * The agent's upload leg. Authorized by the single-use ticket in x-job-token — the agent
  * has no admin password and no browser origin, so the ticket is the whole access story.
+ *
+ * `x-input-sha256` is a separate question from authorization: the ticket proves the uploader
+ * is entitled to answer *this* job, and the digest proves the answer was computed from this
+ * job's image. They fail differently and are checked separately.
  */
 app.put('/api/job/:jobId/output', async (c) => {
   if (!c.env.R2_IMAGE) {
@@ -279,6 +284,31 @@ app.put('/api/job/:jobId/output', async (c) => {
   // uploading a JPEG; telling it so here, at the moment of upload, is far more useful than
   // failing the job minutes later.
   assertUsableCutoutBytes(bytes, 'uploader');
+
+  // Is this a cutout of the image we staged, or of somebody else's? The agent runs every
+  // delegation in one sandbox, so a batch used to have several turns writing the same
+  // scratch paths and uploading each other's pictures — a valid PNG of the wrong subject,
+  // which every other check here passes. Per-job working directories fixed that; this is
+  // what notices if it ever comes back.
+  //
+  // Only an actual disagreement is fatal. A missing header (an agent that has not been
+  // told to send one) or a missing digest (an input already pruned) leaves the upload
+  // alone, because refusing a good cutout over an absent guard is the worse failure.
+  const claimed = (c.req.header('x-input-sha256') ?? '').trim().toLowerCase();
+  if (claimed) {
+    const expected = await inputDigestFor(c.env, jobId);
+    if (expected && !safeEqual(claimed, expected)) {
+      // Deliberately not spending the ticket: the agent can reprocess the right file and
+      // upload again inside the ten minutes.
+      throw new HttpError(
+        409,
+        'input_mismatch',
+        `This result was produced from a different image (sent ${claimed.slice(0, 12)}…, ` +
+          `expected ${expected.slice(0, 12)}…). Re-download this job's input to its own ` +
+          `working directory, redo the removal from that file, and upload again.`,
+      );
+    }
+  }
 
   await consumeJobTicket(c.env, jobId);
   await c.env.R2_IMAGE.put(outputKeyFor(jobId), bytes, {

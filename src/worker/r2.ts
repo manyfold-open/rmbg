@@ -23,13 +23,15 @@ export async function putImageAtKey(
   bytes: Uint8Array,
   contentType: string,
   label: string,
+  /** Extra custom metadata to travel with the object, e.g. a staged input's digest. */
+  metadata: Record<string, string> = {},
 ): Promise<{ r2Key: string; r2Url: string } | null> {
   if (!env.R2_IMAGE) {
     return null;
   }
   await env.R2_IMAGE.put(key, bytes, {
     httpMetadata: { contentType },
-    customMetadata: { label, createdAt: new Date().toISOString() },
+    customMetadata: { label, createdAt: new Date().toISOString(), ...metadata },
   });
   return { r2Key: key, r2Url: `/api/r2/${encodeURIComponent(key)}` };
 }

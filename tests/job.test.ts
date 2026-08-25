@@ -1,21 +1,40 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import app from '../src/worker/index';
 import {
+  INPUT_DIGEST_METADATA,
   createJobTicket,
   getJobNote,
   outputKeyFor,
   pruneJobTickets,
   redeemJobTicket,
   setJobNote,
+  sha256Hex,
 } from '../src/worker/job';
 import type { Env } from '../src/worker/types';
 import { CUTOUT_PNG_BASE64, makeJobDb as makeDb } from './fixtures';
 
+interface StoredObject {
+  bytes: Uint8Array;
+  contentType: string;
+  metadata?: Record<string, string>;
+}
+
 function makeR2() {
-  const store = new Map<string, { bytes: Uint8Array; contentType: string }>();
+  const store = new Map<string, StoredObject>();
   const bucket = {
-    async put(key: string, bytes: Uint8Array, opts?: { httpMetadata?: { contentType?: string } }) {
-      store.set(key, { bytes, contentType: opts?.httpMetadata?.contentType ?? 'image/png' });
+    async put(
+      key: string,
+      bytes: Uint8Array,
+      opts?: {
+        httpMetadata?: { contentType?: string };
+        customMetadata?: Record<string, string>;
+      },
+    ) {
+      store.set(key, {
+        bytes,
+        contentType: opts?.httpMetadata?.contentType ?? 'image/png',
+        metadata: opts?.customMetadata,
+      });
     },
     async get(key: string) {
       const hit = store.get(key);
@@ -31,6 +50,15 @@ function makeR2() {
     async head(key: string) {
       const hit = store.get(key);
       return hit ? { size: hit.bytes.byteLength } : null;
+    },
+    // The upload route finds a job's staged input by prefix, because the key's extension
+    // follows whatever image type the browser sent.
+    async list(opts?: { prefix?: string; limit?: number }) {
+      const objects = [...store.entries()]
+        .filter(([key]) => !opts?.prefix || key.startsWith(opts.prefix))
+        .slice(0, opts?.limit ?? 1000)
+        .map(([key, value]) => ({ key, customMetadata: value.metadata }));
+      return { objects, truncated: false };
     },
   } as unknown as R2Bucket;
   return { bucket, store };
@@ -192,6 +220,86 @@ describe('PUT /api/job/:jobId/output', () => {
     );
     expect(retry.status).toBe(200);
     expect(store.has(outputKeyFor(ticket.jobId))).toBe(true);
+  });
+
+  describe('the provenance check', () => {
+    // Several removals share one sandbox, and one turn overwriting another's /tmp/input.png
+    // delivered a genuine cutout of somebody else's photo under the right job token. Nothing
+    // about those bytes looks wrong, so the only way to catch it is to make the agent say
+    // which file it read: x-input-sha256, checked against the input this job staged.
+    async function stageJob() {
+      const { db } = makeDb();
+      const { bucket, store } = makeR2();
+      const env = { DB: db, R2_IMAGE: bucket } as Env;
+      const ticket = await createJobTicket(env, 'png');
+      await bucket.put(ticket.inputKey, png, {
+        httpMetadata: { contentType: 'image/png' },
+        customMetadata: { [INPUT_DIGEST_METADATA]: await sha256Hex(png) },
+      });
+      return { env, store, ticket };
+    }
+
+    function upload(env: Env, jobId: string, token: string, digest?: string) {
+      return app.request(
+        `/api/job/${jobId}/output`,
+        {
+          method: 'PUT',
+          headers: {
+            'content-type': 'image/png',
+            'x-job-token': token,
+            ...(digest ? { 'x-input-sha256': digest } : {}),
+          },
+          body: png,
+        },
+        env,
+      );
+    }
+
+    it('rejects a cutout made from a different image, and leaves the ticket usable', async () => {
+      const { env, store, ticket } = await stageJob();
+
+      const wrong = await upload(env, ticket.jobId, ticket.token, 'a'.repeat(64));
+      expect(wrong.status).toBe(409);
+      const body = (await wrong.json()) as { error: { code: string } };
+      expect(body.error.code).toBe('input_mismatch');
+      expect(store.has(outputKeyFor(ticket.jobId))).toBe(false);
+
+      // A mismatch is the agent's mistake to fix, not the end of the job: it can redo the
+      // removal from this job's own input and PUT again with the same token.
+      const retry = await upload(env, ticket.jobId, ticket.token, await sha256Hex(png));
+      expect(retry.status).toBe(200);
+      expect(store.has(outputKeyFor(ticket.jobId))).toBe(true);
+    });
+
+    it('accepts a cutout whose digest matches the staged input', async () => {
+      const { env, store, ticket } = await stageJob();
+      const res = await upload(env, ticket.jobId, ticket.token, await sha256Hex(png));
+      expect(res.status).toBe(200);
+      expect(store.has(outputKeyFor(ticket.jobId))).toBe(true);
+    });
+
+    it('accepts an upload that sends no digest at all', async () => {
+      // The header is a safety net, not a requirement. An older agent, or one whose shell
+      // lacks sha256sum, still delivers — never fail a good cutout over a missing guard.
+      const { env, store, ticket } = await stageJob();
+      const res = await upload(env, ticket.jobId, ticket.token);
+      expect(res.status).toBe(200);
+      expect(store.has(outputKeyFor(ticket.jobId))).toBe(true);
+    });
+
+    it('accepts a digest when the job has no staged input to compare against', async () => {
+      // Jobs created before the digest existed have no metadata on their input. There is
+      // nothing to check, so there is nothing to reject.
+      const { db } = makeDb();
+      const { bucket, store } = makeR2();
+      const env = { DB: db, R2_IMAGE: bucket } as Env;
+      const ticket = await createJobTicket(env, 'png');
+      await bucket.put(ticket.inputKey, png, { httpMetadata: { contentType: 'image/png' } });
+
+      const res = await upload(env, ticket.jobId, ticket.token, 'a'.repeat(64));
+      expect(res.status).toBe(200);
+      expect(store.has(outputKeyFor(ticket.jobId))).toBe(true);
+    });
   });
 
   it('records that the agent downloaded the input, and still accepts the upload after', async () => {
