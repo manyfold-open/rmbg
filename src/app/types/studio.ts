@@ -51,3 +51,24 @@ export interface ToastMessage {
   text: string;
   type?: 'info' | 'success' | 'warning';
 }
+
+/** An image picked for upload, before anything has been done to it. */
+export interface SelectedImage {
+  name: string;
+  dataUrl: string;
+}
+
+export type BatchItemStatus = 'queued' | 'processing' | 'done' | 'failed';
+
+/** One image's progress through a batch run. */
+export interface BatchItem {
+  id: string;
+  name: string;
+  originalImage: string;
+  status: BatchItemStatus;
+  /** The agent's own words while it works — a batch runs for minutes. */
+  progress: string | null;
+  cutoutImage: string | null;
+  subjectLabel: string | null;
+  error: string | null;
+}

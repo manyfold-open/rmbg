@@ -55,6 +55,36 @@ const UPLOAD_POLL_MS = 2_000;
 const ASYNC_UPLOAD_GRACE_MS = 6 * 60_000;
 const ASYNC_UPLOAD_POLL_MS = 5_000;
 
+/**
+ * An agent accepts a limited number of concurrent A2A delegations — measured at 8. Past that
+ * the platform rejects the *dispatch* in well under a second:
+ *
+ *   RPC error -32603: too many concurrent A2A delegations (8/8); retry when one finishes
+ *
+ * That is categorically different from the stream drops this file otherwise defends against.
+ * A dropped stream means the turn is running and we stopped hearing about it, so waiting is
+ * right. A rejected dispatch means the turn *never started*: no upload is coming, and waiting
+ * for one burns the ticket's whole ten-minute TTL showing a spinner. It is also the most
+ * retryable error here — a slot frees as soon as any sibling turn ends.
+ *
+ * Batch submissions hit this on every run by construction, so the job waits for a slot and
+ * only fails once waiting is hopeless.
+ */
+const DISPATCH_RETRY_BASE_MS = 2_000;
+const DISPATCH_RETRY_MAX_MS = 30_000;
+const DISPATCH_RETRY_WINDOW_MS = 5 * 60_000;
+
+/** True for a dispatch rejection, which is retryable, not for a stream that died mid-turn. */
+export function isDispatchRejection(message: string): boolean {
+  return /too many concurrent\b.*\bdelegations/i.test(message);
+}
+
+/** Exponential backoff with jitter, so sibling jobs do not all retry on the same tick. */
+export function dispatchRetryDelay(attempt: number, random = Math.random): number {
+  const capped = Math.min(DISPATCH_RETRY_BASE_MS * 2 ** attempt, DISPATCH_RETRY_MAX_MS);
+  return Math.round(capped / 2 + random() * (capped / 2));
+}
+
 /** Poll R2 for the agent's upload until it lands or the grace period runs out. */
 async function waitForUpload(
   bucket: R2Bucket,
@@ -402,59 +432,103 @@ interface AgentJob {
 async function runAgentJob(job: AgentJob, graceMs: number, pollMs?: number): Promise<RemoveBgResponse> {
   const { env, cred, agentName, ticket } = job;
   const bucket = env.R2_IMAGE!;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
+  // Re-created per dispatch attempt: a rejected dispatch consumed none of the turn's budget,
+  // so the timeout should start when a turn actually starts.
+  let controller = new AbortController();
+  let timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
 
   try {
     let snapshot: StreamSnapshot | null = null;
     let streamError: string | null = null;
+    const dispatchDeadline = Date.now() + Math.min(graceMs, DISPATCH_RETRY_WINDOW_MS);
 
-    try {
-      snapshot = await consumeA2AStream({
-        cred,
-        params: {
-          message: {
-            kind: 'message',
-            role: 'user',
-            messageId: `rmbg-${crypto.randomUUID()}`,
-            // No A2A FilePart here. The agent cannot read bytes off one anyway — the
-            // text prompt's STEP 1 has it curl the full image from inputUrl, which is
-            // the only path that actually feeds the pixels into processing. Inlining
-            // the image as base64 in this JSON-RPC body too was pure duplication, and
-            // for large originals (megapixel photos run ~4MB+ of base64) it pushed the
-            // request over the agent endpoint's body-size limit: a straight HTTP 413
-            // that left the job stuck pending until the ticket's 10-minute TTL expired.
-            parts: [
-              {
-                kind: 'text',
-                text: agentInstructions(job.inputUrl, job.uploadUrl, ticket.token, job.model),
-              },
-            ],
+    // Built once and reused across dispatch retries. Holding the messageId steady is
+    // deliberate: a retry that reaches a platform which deduplicates by messageId resolves
+    // to the original task rather than billing a second turn.
+    const params = {
+      message: {
+        kind: 'message' as const,
+        role: 'user' as const,
+        messageId: `rmbg-${crypto.randomUUID()}`,
+        // No A2A FilePart here. The agent cannot read bytes off one anyway — the
+        // text prompt's STEP 1 has it curl the full image from inputUrl, which is
+        // the only path that actually feeds the pixels into processing. Inlining
+        // the image as base64 in this JSON-RPC body too was pure duplication, and
+        // for large originals (megapixel photos run ~4MB+ of base64) it pushed the
+        // request over the agent endpoint's body-size limit: a straight HTTP 413
+        // that left the job stuck pending until the ticket's 10-minute TTL expired.
+        parts: [
+          {
+            kind: 'text' as const,
+            text: agentInstructions(job.inputUrl, job.uploadUrl, ticket.token, job.model),
           },
-          configuration: {
-            acceptedOutputModes: [
-              'image/png',
-              'image/jpeg',
-              'image/webp',
-              'text/plain',
-              'application/json',
-            ],
-          },
-        },
-        signal: controller.signal,
-      });
-    } catch (streamErr: unknown) {
-      // Do not give up here. The agent's upload travels over plain HTTPS and is
-      // completely independent of this stream, so a dropped stream is not evidence
-      // that the job failed — only that we stopped hearing about it.
-      streamError = streamErr instanceof Error ? streamErr.message : String(streamErr);
-      console.error('Manyfold A2A stream error:', streamError);
-      await setJobNote(
-        env,
-        ticket.jobId,
-        'progress',
-        `The Agent connection was interrupted (${streamError}), but the Agent is still running. Waiting for its upload.`,
-      );
+        ],
+      },
+      configuration: {
+        acceptedOutputModes: [
+          'image/png',
+          'image/jpeg',
+          'image/webp',
+          'text/plain',
+          'application/json',
+        ],
+      },
+    };
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        snapshot = await consumeA2AStream({ cred, params, signal: controller.signal });
+        break;
+      } catch (streamErr: unknown) {
+        const message = streamErr instanceof Error ? streamErr.message : String(streamErr);
+
+        if (isDispatchRejection(message)) {
+          // Out of patience with the turn never dispatched: no upload can arrive, so say so
+          // now instead of holding the browser until the ticket expires.
+          if (Date.now() >= dispatchDeadline) {
+            await setJobNote(
+              env,
+              ticket.jobId,
+              'failed',
+              `The Agent stayed at capacity for too long, so this image was never started. ${message}`,
+            );
+            throw new HttpError(
+              503,
+              'agent_busy',
+              `Manyfold Agent ("${agentName}") is at capacity: ${message}`,
+            );
+          }
+
+          // Nothing started, so there is nothing to wait for and everything to gain by
+          // asking again once a sibling turn frees a slot.
+          const delay = dispatchRetryDelay(attempt);
+          console.warn(`Manyfold A2A dispatch rejected, retrying in ${delay}ms:`, message);
+          await setJobNote(
+            env,
+            ticket.jobId,
+            'progress',
+            `The Agent is at capacity. Waiting for a free slot, then retrying (attempt ${attempt + 2}).`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          clearTimeout(timer);
+          controller = new AbortController();
+          timer = setTimeout(() => controller.abort(), REMOVE_BG_TIMEOUT_MS);
+          continue;
+        }
+
+        // Do not give up here. The agent's upload travels over plain HTTPS and is
+        // completely independent of this stream, so a dropped stream is not evidence
+        // that the job failed — only that we stopped hearing about it.
+        streamError = message;
+        console.error('Manyfold A2A stream error:', streamError);
+        await setJobNote(
+          env,
+          ticket.jobId,
+          'progress',
+          `The Agent connection was interrupted (${streamError}), but the Agent is still running. Waiting for its upload.`,
+        );
+        break;
+      }
     }
 
     // Only a *terminal* snapshot means the turn is over. A stream can also just stop —

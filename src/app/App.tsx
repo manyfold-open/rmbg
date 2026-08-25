@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { AlertCircle, RefreshCw, Layers, Keyboard, Settings, Image as ImageIcon } from 'lucide-react';
 import { UploadZone } from './components/UploadZone';
+import { BatchGrid } from './components/BatchGrid';
 import { ComparisonSlider } from './components/ComparisonSlider';
 import { BackgroundCustomizer } from './components/BackgroundCustomizer';
 import { ExportToolbar } from './components/ExportToolbar';
@@ -8,13 +9,20 @@ import { HistoryDrawer } from './components/HistoryDrawer';
 import SettingsView from './components/SettingsView';
 import { ToastContainer } from './components/Toast';
 import type { AppState } from '../shared/types';
-import type { BgConfig, PostProcessConfig, HistoryItem, ToastMessage } from './types/studio';
+import type {
+  BatchItem,
+  BgConfig,
+  HistoryItem,
+  PostProcessConfig,
+  SelectedImage,
+  ToastMessage,
+} from './types/studio';
 import { DEFAULT_POST_PROCESS } from './types/studio';
 import { api } from './api';
-import { waitForJobResult } from './jobs';
 import { addHistoryItem, clearHistoryStore, createHistoryId, loadHistory } from './history';
-
-import { compressImageForAI, createCutoutFromSvgPath } from './utils/image';
+import { removeBackground } from './remove';
+import { BATCH_CONCURRENCY, cutoutFileName, runQueue } from './batch';
+import { downloadDataUrl } from './utils/download';
 
 export function App() {
   const [currentPath, setCurrentPath] = useState<string>(() => window.location.pathname);
@@ -28,6 +36,10 @@ export function App() {
   /** What the agent is doing right now. An agent turn runs for minutes — say something. */
   const [progressHint, setProgressHint] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Batch state. Empty means the app is in its ordinary one-image-at-a-time mode.
+  const [batchItems, setBatchItems] = useState<BatchItem[]>([]);
+  const [isBatchRunning, setIsBatchRunning] = useState<boolean>(false);
 
   // Background Manyfold Agents state for A2A delegation
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
@@ -111,20 +123,32 @@ export function App() {
     };
   }, [showToast]);
 
-  const saveToHistory = async (item: Omit<HistoryItem, 'id' | 'timestamp'>) => {
-    const newItem: HistoryItem = {
-      ...item,
-      id: createHistoryId(),
-      timestamp: Date.now(),
-    };
+  const historyChain = useRef<Promise<void>>(Promise.resolve());
 
-    try {
-      const updated = await addHistoryItem(newItem);
-      setHistory(updated);
-    } catch (err) {
-      console.error('Session history save failed:', err);
-      showToast('This result could not be saved to Session history.', 'warning');
-    }
+  /**
+   * Writes are serialised because a batch lands several images at once, and the
+   * localStorage fallback in `history.ts` is a read-modify-write that would drop entries
+   * if two of them overlapped.
+   */
+  const saveToHistory = (item: Omit<HistoryItem, 'id' | 'timestamp'>): Promise<void> => {
+    const next = historyChain.current.then(async () => {
+      const newItem: HistoryItem = {
+        ...item,
+        id: createHistoryId(),
+        timestamp: Date.now(),
+      };
+
+      try {
+        const updated = await addHistoryItem(newItem);
+        setHistory(updated);
+      } catch (err) {
+        console.error('Session history save failed:', err);
+        showToast('This result could not be saved to Session history.', 'warning');
+      }
+    });
+
+    historyChain.current = next;
+    return next;
   };
 
   const clearHistory = async () => {
@@ -138,7 +162,8 @@ export function App() {
     }
   };
 
-  const handleImageSelected = async (dataUrl: string) => {
+  /** The one-image studio flow: the result takes over the canvas. */
+  const runSingleImage = async (dataUrl: string) => {
     setOriginalImage(dataUrl);
     setIsLoading(true);
     setErrorMsg(null);
@@ -149,99 +174,23 @@ export function App() {
     setPostProcess(DEFAULT_POST_PROCESS);
 
     try {
-      // 1. Compress image payload preserving alpha channel for AI vision processing
-      const compressedImage = await compressImageForAI(dataUrl, 1536, 0.85);
-
-      // 2. Call background removal API powered by Manyfold Agent / Gemini 3.6 Flash
-      const response = await fetch('/api/remove-bg', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          image: compressedImage,
-          ...(selectedAgentId ? { agentId: selectedAgentId } : {}),
-        }),
+      const result = await removeBackground(dataUrl, {
+        agentId: selectedAgentId,
+        onProgress: setProgressHint,
       });
 
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const errDetail = errorData.error?.message || errorData.message || `HTTP ${response.status}`;
-        throw new Error(`Background removal failed (${errDetail})`);
-      }
+      setSubjectLabel(result.label);
+      setCutoutImage(result.cutout);
+      setSvgPath(result.svgPath);
 
-      const data = (await response.json()) as {
-        label?: string;
-        image?: string;
-        svgPath?: string;
-        r2Key?: string;
-        r2Url?: string;
-        jobId?: string;
-        statusUrl?: string;
-      };
+      await saveToHistory({
+        originalImage: dataUrl,
+        cutoutImage: result.cutout,
+        svgPath: result.svgPath,
+        subjectLabel: result.label,
+      });
 
-      // A jobId means 202: the agent's turn is running in the Worker's waitUntil and the
-      // cutout will appear in R2 minutes from now. Nothing else in this response is a
-      // result. Without one, this is the direct-Gemini path, which answers inline.
-      if (data.jobId && data.statusUrl) {
-        const agentLabel = data.label || 'Manyfold Agent';
-        setSubjectLabel(agentLabel);
-        setProgressHint(`Handed to ${agentLabel}. Waiting for the result…`);
-
-        const { dataUrl: cutout } = await waitForJobResult(data.statusUrl, (message) =>
-          setProgressHint(message),
-        );
-
-        setCutoutImage(cutout);
-        setSvgPath(null);
-        await saveToHistory({
-          originalImage: dataUrl,
-          cutoutImage: cutout,
-          svgPath: null,
-          subjectLabel: agentLabel,
-        });
-        showToast(`✦ Background removed (${agentLabel}) · backed up to R2`, 'success');
-        return;
-      }
-
-      if (!data.image && !data.svgPath) {
-        throw new Error('Background removal failed: no cutout image was returned.');
-      }
-
-      const extractedLabel = data.label || 'Subject detected';
-      setSubjectLabel(extractedLabel);
-
-      if (data.image) {
-        // Native image background removal from Agent
-        setCutoutImage(data.image);
-        setSvgPath(null);
-
-        await saveToHistory({
-          originalImage: dataUrl,
-          cutoutImage: data.image,
-          svgPath: null,
-          subjectLabel: extractedLabel,
-        });
-      } else if (data.svgPath) {
-        // Legacy SVG path fallback
-        const extractedSvgPath = data.svgPath;
-        setSvgPath(extractedSvgPath);
-        const generatedCutout = await createCutoutFromSvgPath(dataUrl, extractedSvgPath);
-        setCutoutImage(generatedCutout);
-
-        await saveToHistory({
-          originalImage: dataUrl,
-          cutoutImage: generatedCutout,
-          svgPath: extractedSvgPath,
-          subjectLabel: extractedLabel,
-        });
-      }
-
-      if (data.r2Url) {
-        showToast(`✦ Background removed (${extractedLabel}) · backed up to R2`, 'success');
-      } else {
-        showToast(`✦ Background removed and subject detected (${extractedLabel})`, 'success');
-      }
+      showToast(`✦ Background removed (${result.label})`, 'success');
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('Background removal error:', message);
@@ -251,6 +200,117 @@ export function App() {
       setIsLoading(false);
       setProgressHint(null);
     }
+  };
+
+  const updateBatchItem = useCallback((id: string, patch: Partial<BatchItem>) => {
+    setBatchItems((prev) => prev.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }, []);
+
+  /**
+   * Run these items through the queue. Used both for a fresh batch and for retrying the
+   * failures out of one, so the retry path cannot drift from the original.
+   */
+  const runBatchItems = async (targets: BatchItem[]) => {
+    setIsBatchRunning(true);
+    let succeeded = 0;
+    let failed = 0;
+
+    try {
+      await runQueue(targets, BATCH_CONCURRENCY, async (target) => {
+        updateBatchItem(target.id, {
+          status: 'processing',
+          progress: 'Handing to the agent…',
+          error: null,
+        });
+
+        try {
+          const result = await removeBackground(target.originalImage, {
+            agentId: selectedAgentId,
+            onProgress: (message) => updateBatchItem(target.id, { progress: message }),
+          });
+
+          updateBatchItem(target.id, {
+            status: 'done',
+            progress: null,
+            cutoutImage: result.cutout,
+            subjectLabel: result.label,
+            error: null,
+          });
+          succeeded += 1;
+
+          await saveToHistory({
+            originalImage: target.originalImage,
+            cutoutImage: result.cutout,
+            svgPath: result.svgPath,
+            subjectLabel: result.label,
+          });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`Background removal error (${target.name}):`, message);
+          updateBatchItem(target.id, { status: 'failed', progress: null, error: message });
+          failed += 1;
+        }
+      });
+    } finally {
+      setIsBatchRunning(false);
+    }
+
+    if (failed === 0) {
+      showToast(`✦ ${succeeded} image${succeeded === 1 ? '' : 's'} ready`, 'success');
+    } else {
+      showToast(`${succeeded} ready, ${failed} failed — retry the failures from their cards.`, 'warning');
+    }
+  };
+
+  const handleImagesSelected = async (images: SelectedImage[]) => {
+    if (images.length === 0) return;
+
+    // One image is the studio, not a batch — a grid of one would be a worse editor.
+    if (images.length === 1) {
+      await runSingleImage(images[0].dataUrl);
+      return;
+    }
+
+    const batchId = Date.now();
+    const items: BatchItem[] = images.map((image, index) => ({
+      id: `batch-${batchId}-${index}`,
+      name: image.name,
+      originalImage: image.dataUrl,
+      status: 'queued',
+      progress: null,
+      cutoutImage: null,
+      subjectLabel: null,
+      error: null,
+    }));
+
+    setErrorMsg(null);
+    setBatchItems(items);
+    await runBatchItems(items);
+  };
+
+  const handleRetryBatchItem = (id: string) => {
+    if (isBatchRunning) return;
+    const target = batchItems.find((item) => item.id === id);
+    if (target) void runBatchItems([target]);
+  };
+
+  const handleDownloadBatchItem = (item: BatchItem) => {
+    if (!item.cutoutImage) return;
+    downloadDataUrl(item.cutoutImage, cutoutFileName(item.name));
+  };
+
+  const handleDownloadBatch = () => {
+    const ready = batchItems.filter((item) => item.status === 'done' && item.cutoutImage);
+    if (ready.length === 0) return;
+
+    // Staggered: browsers drop downloads fired from a single tight loop.
+    ready.forEach((item, index) => {
+      window.setTimeout(
+        () => downloadDataUrl(item.cutoutImage!, cutoutFileName(item.name)),
+        index * 200,
+      );
+    });
+    showToast(`Downloading ${ready.length} cutouts…`, 'success');
   };
 
   const handleReset = () => {
@@ -268,6 +328,22 @@ export function App() {
       blurAmount: 10,
     });
     setPostProcess(DEFAULT_POST_PROCESS);
+  };
+
+  /** Pull one finished batch image onto the canvas. The grid stays put underneath it. */
+  const handleOpenBatchItem = (item: BatchItem) => {
+    setOriginalImage(item.originalImage);
+    setCutoutImage(item.cutoutImage);
+    setSvgPath(null);
+    setSubjectLabel(item.subjectLabel);
+    setErrorMsg(null);
+    setPostProcess(DEFAULT_POST_PROCESS);
+    showToast(`Opened ${item.name} in the studio`, 'info');
+  };
+
+  const handleClearBatch = () => {
+    handleReset();
+    setBatchItems([]);
   };
 
   const handleRestoreHistoryItem = (item: HistoryItem) => {
@@ -359,8 +435,8 @@ export function App() {
       ) : (
         <main className="app-main atelier-main">
           {/* Step 1: Uploading State */}
-          {!originalImage && (
-            <UploadZone onImageSelected={handleImageSelected} isLoading={isLoading} />
+          {!originalImage && batchItems.length === 0 && (
+            <UploadZone onImagesSelected={handleImagesSelected} isLoading={isLoading} />
           )}
 
           {/* Step 2: Processing / Loading Overlay */}
@@ -455,6 +531,19 @@ export function App() {
               </div>
               </div>
             </div>
+          )}
+
+          {/* Batch results — stays below the studio so opening one image keeps the grid */}
+          {batchItems.length > 0 && (
+            <BatchGrid
+              items={batchItems}
+              isRunning={isBatchRunning}
+              onRetry={handleRetryBatchItem}
+              onOpen={handleOpenBatchItem}
+              onDownload={handleDownloadBatchItem}
+              onDownloadAll={handleDownloadBatch}
+              onReset={handleClearBatch}
+            />
           )}
 
           {/* Session History Drawer */}

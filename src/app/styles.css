@@ -2383,3 +2383,205 @@ body,
     flex-direction: column;
   }
 }
+
+/* ── Batch results ────────────────────────────────────────────────── */
+
+.atelier-batch {
+  width: 100%;
+  max-width: 1180px;
+  margin: 0 auto 40px;
+  padding: 26px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.atelier-batch-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.atelier-batch-heading h2 {
+  margin: 8px 0 4px;
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.atelier-batch-heading p {
+  margin: 0;
+  max-width: 52ch;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.atelier-batch-failed {
+  color: var(--danger);
+  font-weight: 500;
+}
+
+.atelier-batch-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.atelier-batch-progress {
+  height: 4px;
+  margin: 20px 0 22px;
+  background: var(--border-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.atelier-batch-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.atelier-batch-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(196px, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.atelier-batch-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--surface-pearl);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+}
+
+.atelier-batch-card.is-done {
+  border-color: var(--accent-tint-border);
+}
+
+.atelier-batch-card.is-failed {
+  border-color: var(--danger);
+  background: var(--danger-tint);
+}
+
+.atelier-batch-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  aspect-ratio: 1 / 1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.atelier-batch-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.atelier-batch-thumb img.is-pending {
+  opacity: 0.45;
+  filter: grayscale(0.4);
+}
+
+.atelier-batch-spinner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+}
+
+.atelier-batch-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.atelier-batch-name {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.atelier-batch-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--surface-subtle);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.atelier-batch-status.is-processing {
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+.atelier-batch-status.is-done {
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+
+.atelier-batch-status.is-failed {
+  background: var(--danger-tint);
+  color: var(--danger);
+}
+
+.atelier-batch-note {
+  margin: 0;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.atelier-batch-note.is-error {
+  color: var(--danger);
+}
+
+.atelier-batch-card-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+
+.atelier-batch-card-actions .button {
+  flex: 1;
+  gap: 4px;
+  padding: 5px 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .atelier-batch {
+    padding: 18px;
+  }
+
+  .atelier-batch-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  }
+}
