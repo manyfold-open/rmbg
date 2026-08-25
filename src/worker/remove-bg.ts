@@ -120,6 +120,17 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * crisp, fully-opaque coloured outline, matching exactly what showed up in production. The fix
  * is to scale the ramp to the actual key-to-subject distance for this image (STEP 1.5's
  * `mindist`) instead of a constant tuned for nothing in particular.
+ *
+ * STEP 1.5 hands its answer to STEP 3 through /tmp/key.json rather than through the agent.
+ * The earlier version printed the numbers and asked the agent to paste them into placeholders
+ * in STEP 3's script; measured over 12 production runs on 2026-08-25, it substituted magenta
+ * instead of the computed colour in about a third of them, leaving stray key-coloured pixels
+ * along the silhouette. More warnings did not help — the prompt already said not to. Removing
+ * the transcription entirely does, and the remaining hand-carried value (STEP 2's request to
+ * the image model) is now guarded: STEP 3 measures how much of the frame actually keyed out
+ * and refuses to write an output when STEP 2's colour disagrees with the file, which would
+ * otherwise produce a fully-opaque image that passes `assertUsableCutoutBytes` — that check
+ * reads the PNG colour type, so an RGBA image whose alpha is 255 everywhere looks valid to it.
  */
 function agentInstructions(inputUrl: string, uploadUrl: string, token: string, model: string): string {
   return `Remove the background from an image. Do the work with shell commands — do not answer from the attached preview alone.
@@ -130,36 +141,47 @@ STEP 1 — download the image:
 STEP 1.5 — pick a background colour that is nothing like this subject:
 
   python3 - <<'EOF'
-  from PIL import Image
-  import numpy as np
-  img = np.array(Image.open('/tmp/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
-  if len(img) > 20000:
-      img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
-  candidates = {
-      'magenta': (255, 0, 255),
-      'green': (0, 255, 0),
-      'cyan': (0, 255, 255),
-      'yellow': (255, 255, 0),
-      'blue': (0, 0, 255),
-      'red': (255, 0, 0),
-  }
-  scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
-            for name, rgb in candidates.items()}
-  name = max(scores, key=scores.get)
-  r, g, b = candidates[name]
-  print(f'KEY {name} {r} {g} {b} mindist={scores[name]:.0f}')
-  EOF
+from PIL import Image
+import numpy as np, json
+img = np.array(Image.open('/tmp/input.png').convert('RGB')).reshape(-1, 3).astype(np.float32)
+if len(img) > 20000:
+    img = img[np.linspace(0, len(img) - 1, 20000).astype(int)]
+candidates = {
+    'magenta': (255, 0, 255),
+    'green': (0, 255, 0),
+    'cyan': (0, 255, 255),
+    'yellow': (255, 255, 0),
+    'blue': (0, 0, 255),
+    'red': (255, 0, 0),
+}
+scores = {name: np.abs(img - np.array(rgb, dtype=np.float32)).sum(axis=1).min()
+          for name, rgb in candidates.items()}
+name = max(scores, key=scores.get)
+r, g, b = candidates[name]
+json.dump({'name': name, 'rgb': [r, g, b], 'mindist': float(scores[name])},
+          open('/tmp/key.json', 'w'))
+print(f'KEY {name} rgb=({r},{g},{b}) mindist={scores[name]:.0f}')
+EOF
 
-That prints one line, e.g. \`KEY cyan 0 255 255 mindist=142\` — the colour and RGB triple that
-is safest for STEP 2 and STEP 3 below. Use exactly that colour for the rest of these steps,
-even if it is magenta — do not default to magenta without checking this output. If mindist is
-under 100, this subject spans most of the colour wheel and no candidate is fully safe; proceed
-with the printed colour anyway, but after STEP 3 look at /tmp/output.png's edges and say so
-honestly in your reply if you can see a colour fringe, instead of uploading it silently.
+That prints one line, e.g. \`KEY cyan rgb=(0,255,255) mindist=142\`, and saves the same values
+to /tmp/key.json. STEP 3 reads that file, so you never retype these numbers anywhere.
 
-STEP 2 — use ${model} to replace the background with the flat colour STEP 1.5 printed.
-Send /tmp/input.png to ${model} and ask for the same image with every background pixel
-replaced by that solid colour, at exactly the RGB triple STEP 1.5 printed. Save its output as
+The one place the colour still passes through you by hand is STEP 2's request to the image
+model, and the two must agree: STEP 3 keys out whatever /tmp/key.json says, so asking the model
+for a different colour than this printed leaves nothing for it to key and the whole image comes
+back opaque. Use the name this line printed and nothing else — do not default to magenta,
+which is the specific mistake that keeps happening. If mindist is under 100, this subject spans
+most of the colour wheel and no candidate is fully safe; proceed with the printed colour anyway,
+but after STEP 3 look at /tmp/output.png's edges and say so honestly in your reply if you can
+see a colour fringe, instead of uploading it silently.
+
+STEP 2 — use ${model} to replace the background with the flat colour STEP 1.5 chose.
+
+First re-read the colour rather than recalling it:
+  cat /tmp/key.json
+
+Then send /tmp/input.png to ${model} and ask for the same image with every background pixel
+replaced by that solid colour, at exactly the RGB triple in that file. Save its output as
 /tmp/gen.png.
 
   - Do NOT ask for transparency, and do NOT accept a grey-and-white checkerboard. A
@@ -171,38 +193,48 @@ replaced by that solid colour, at exactly the RGB triple STEP 1.5 printed. Save 
 STEP 3 — turn that flat colour into a real alpha channel, at the original size:
 
   python3 - <<'EOF'
-  from PIL import Image
-  import numpy as np
-  src = Image.open('/tmp/input.png').convert('RGB')
-  gen = Image.open('/tmp/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
-  rgb = np.array(gen).astype(np.float32)
-  key = np.array([KEY_R, KEY_G, KEY_B], dtype=np.float32)   # NOT valid Python yet — see below
-  mindist = MINDIST                                          # NOT valid Python yet — see below
-  dist = np.abs(rgb - key).sum(axis=2)
-  lo, hi = 20.0, max(mindist, 21.0)
-  alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
-  # Semi-transparent edge pixels are an anti-aliased blend of subject and key colour.
-  # Un-mix the key colour back out so the edge doesn't carry a colour fringe.
-  a = (alpha.astype(np.float32) / 255.0)[..., None]
-  decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
-  rgb_out = np.where(alpha[..., None] < 255, decontam, rgb).astype(np.uint8)
-  Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save('/tmp/output.png')
-  EOF
+from PIL import Image
+import numpy as np, json, sys
+k = json.load(open('/tmp/key.json'))
+key = np.array(k['rgb'], dtype=np.float32)
+mindist = k['mindist']
+src = Image.open('/tmp/input.png').convert('RGB')
+gen = Image.open('/tmp/gen.png').convert('RGB').resize(src.size, Image.LANCZOS)
+rgb = np.array(gen).astype(np.float32)
+dist = np.abs(rgb - key).sum(axis=2)
+lo, hi = 20.0, max(mindist, 21.0)
+alpha = np.clip((dist - lo) / (hi - lo) * 255, 0, 255).astype(np.uint8)
+# Semi-transparent edge pixels are an anti-aliased blend of subject and key colour.
+# Un-mix the key colour back out so the edge doesn't carry a colour fringe.
+a = (alpha.astype(np.float32) / 255.0)[..., None]
+decontam = np.clip((rgb - key * (1 - a)) / np.clip(a, 1e-3, 1), 0, 255)
+rgb_out = np.where(alpha[..., None] < 255, decontam, rgb).astype(np.uint8)
+clear = float((alpha < 10).mean())
+print(f'CHECK key={k["name"]} transparent={clear*100:.1f}%')
+if clear < 0.01 or clear > 0.99:
+    sys.exit(f'KEY MISMATCH: only {clear*100:.1f}% keyed out, so STEP 2 did not paint the '
+             f'background {k["name"]}. Redo STEP 2 with {k["name"]}. Do not upload this.')
+Image.fromarray(np.dstack([rgb_out, alpha]), 'RGBA').save('/tmp/output.png')
+EOF
 
-Before running that script, replace \`KEY_R, KEY_G, KEY_B\` and \`MINDIST\` with the numbers
-STEP 1.5 printed (e.g. if STEP 1.5 printed \`KEY cyan 0 255 255 mindist=142\`, the lines become
-\`key = np.array([0, 255, 255], dtype=np.float32)\` and \`mindist = 142\`). The key must match
-STEP 2's background colour exactly, or nothing will match and the whole image will come out
-transparent. The mindist substitution matters just as much: it sets how wide the alpha ramp
-is, and a ramp that's too narrow for this image is exactly what used to bake a solid ring of
-raw background colour into the silhouette instead of blending it away — do not hardcode a
-different number here no matter how the image looks.
+That script is complete as written — run it verbatim. It reads the key colour and mindist from
+/tmp/key.json, so there is nothing to fill in and nothing to retype. Do not edit the numbers,
+do not paste a key colour in by hand, and do not hardcode a different mindist no matter how the
+image looks: mindist sets how wide the alpha ramp is, and a ramp too narrow for this image is
+exactly what used to bake a solid ring of raw background colour into the silhouette.
+
+It prints a CHECK line and refuses to write /tmp/output.png if almost nothing or almost
+everything was keyed out. That failure means STEP 2's background does not match /tmp/key.json —
+the usual cause is asking the model for magenta when STEP 1.5 chose something else. Go back to
+STEP 2, ask again using the colour named in the CHECK line, and rerun this script. Do not
+upload a file this script rejected, and do not work around it by changing the key.
 
 If PIL or numpy is unavailable, the equivalent with ImageMagick is:
+  KEY=$(python3 -c "import json;print(json.load(open('/tmp/key.json'))['name'])")
   convert /tmp/gen.png -resize "$(identify -format '%wx%h!' /tmp/input.png)" \\
-    -fuzz 20% -transparent COLOURNAME /tmp/output.png
-(replace COLOURNAME with the colour name STEP 1.5 printed, e.g. cyan — ImageMagick knows all
-six candidate names directly)
+    -fuzz 20% -transparent "$KEY" /tmp/output.png
+(ImageMagick knows all six candidate colour names directly, and json is in the standard library
+even when PIL is missing, so there is nothing to type in by hand here either)
 If neither tool exists, do not improvise and do not upload — say so in your reply instead.
 
 STEP 4 — upload the result:
